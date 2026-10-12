@@ -465,8 +465,8 @@ class Capture:
                 seg.pop("error", None)
                 taken: set = set()
                 for it in queue_items:
-                    if not run["experiment"]:
-                        self._free_key(it, taken)
+                    self._free_key(it, taken, self._run_dir(run["run_id"]) / "items"
+                                   if run["experiment"] else self.store.queue)
                     if run["experiment"]:
                         write_json(self._run_dir(run["run_id"]) / "items" /
                                    f"{Store.key_name(it['key'])}.json", it)
@@ -488,16 +488,17 @@ class Capture:
                     "open_segments": sum(1 for s in run["segments"] if not s["committed"]),
                     "errors": {s["id"]: s["error"] for s in run["segments"] if s.get("error")}}
 
-    def _free_key(self, item: dict, taken: set) -> None:
-        """Bump the item's index past keys another run holds or this commit already used.
+    def _free_key(self, item: dict, taken: set, where: Path) -> None:
+        """Bump the item's index past keys another run or segment holds, or this commit used.
 
-        A segment captured again after ``abandon`` must not replace another run's
-        lessons; a repeated commit of the same run still rewrites its own items.
+        A segment captured again after ``abandon``, or a lesson cited in the overlap
+        with the next segment, must not replace another segment's lessons; a repeated
+        commit of the same segment still rewrites its own items.
         """
         while True:
             name = Store.key_name(item["key"])
-            held = read_json(self.store.queue / f"{name}.json")
-            if name not in taken and (held is None or held["run"]["run_id"] == item["run"]["run_id"]):
+            held = read_json(where / f"{name}.json")
+            if name not in taken and (held is None or held["run"] == item["run"]):
                 taken.add(name)
                 return
             item["key"]["index"] += 1
@@ -553,19 +554,20 @@ class Capture:
             models["judge"] = self._model_evidence(run, run["jobs"][f"{seg['id']}-judge"])
         per_event = Counter()
         out = []
-        seg["handed_off"] = 0
+        seg["in_overlap"] = 0
         first_line = lines[min(lines, key=int)] if lines else None
         for lesson in lessons:
             item = lesson["item"]
             cited, line = "item", None
-            # The best item's citation first, then the other members'. Lines the next
-            # segment owns (the overlap) leave the lesson to that segment.
+            # The best item's citation first, then the other members', preferring lines
+            # this segment owns. A lesson cited only in the overlap is kept too: the next
+            # segment may not find it, and dedupe merges it when it does.
             cited_lines = [lines[str(n)] for n in map(items_mod.event_number, lesson["events"])
                            if n is not None and str(n) in lines]
             line = next((l for l in cited_lines if l.get("owned", True)), None)
             if line is None and cited_lines:
-                seg["handed_off"] += 1
-                continue
+                cited, line = "overlap", cited_lines[0]
+                seg["in_overlap"] += 1
             if line is None:
                 cited, line = "segment-start", first_line
             ref = observer.anchor(self.ao, thread["session_key"], native_id=None,

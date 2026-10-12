@@ -36,7 +36,7 @@ def build(run: dict, items: list[dict]) -> dict:
         "threads_captured": sum(1 for t in threads.values() if t["status"] == "captured"),
         "threads_no_new_events": sum(1 for t in threads.values() if t["status"] == "no-new-events"),
         "threads_held_back": sum(1 for t in threads.values() if t.get("held_back")),
-        "lessons_left_to_next_segment": sum(s.get("handed_off", 0) for s in run["segments"]),
+        "lessons_cited_in_overlap": sum(s.get("in_overlap", 0) for s in run["segments"]),
         "segment_errors": {s["id"]: s["error"] for s in run["segments"] if s.get("error")},
         "segments": len(run["segments"]),
         "segments_committed": sum(1 for s in run["segments"] if s["committed"]),

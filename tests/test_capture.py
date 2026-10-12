@@ -501,7 +501,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(r["steps"]["threads_held_back"], 1)
         self.assertEqual(r["cost"]["sol"]["observed_models"], {"gpt-6.1-sol-2026": len(run["segments"])})
 
-    def test_segments_overlap_and_the_owner_keeps_each_lesson(self):
+    def test_segments_overlap_and_lessons_cited_in_the_overlap_are_kept(self):
         run = self.prepare()
         big = [s for s in run["segments"] if s["thread"] == self.B]
         first, second = big[0], big[1]
@@ -534,10 +534,18 @@ class RunTest(unittest.TestCase):
         self.cap.commit()
         seg = next(s for s in self.cap.load()["segments"] if s["id"] == first["id"])
         self.assertTrue(seg["committed"])
-        self.assertEqual(seg["handed_off"], 1)
-        kept = [i for i in self.cap.store.queued() if i["run"]["segment"] == first["id"]]
-        self.assertEqual([i["title"] for i in kept], ["both"])
-        self.assertEqual(kept[0]["key"]["event"], lines1[str(o)]["item_id"])
+        self.assertEqual(seg["in_overlap"], 1)
+        kept = {i["title"]: i for i in self.cap.store.queued() if i["run"]["segment"] == first["id"]}
+        self.assertEqual(sorted(kept), ["both", "crosses the cut"])
+        self.assertEqual(kept["both"]["key"]["event"], lines1[str(o)]["item_id"])
+        self.assertEqual(kept["crosses the cut"]["moment"]["cited"], "overlap")
+        self.assertEqual(kept["crosses the cut"]["key"]["event"], lines1[str(a)]["item_id"])
+        # The next segment's own lesson at that same event keeps its own key.
+        self.finish_segment(run, second["id"])
+        self.cap.commit()
+        same = [i for i in self.cap.store.queued() if i["key"]["event"] == lines1[str(a)]["item_id"]]
+        self.assertEqual(sorted(i["title"] for i in same), sorted(["crosses the cut", f"lesson {second['id']}"]))
+        self.assertEqual(sorted(i["key"]["index"] for i in same), [0, 1])
 
     def test_replay_uses_the_same_transcripts_with_another_prompt_and_leaves_the_queue(self):
         run = self.prepare()
