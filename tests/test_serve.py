@@ -251,6 +251,50 @@ class InstallTest(unittest.TestCase):
         cred = json.loads((self.base / "userdata" / "contextmd" / "hook-credential").read_text())
         self.assertNotIn("revokePending", cred)
 
+    def test_keeps_a_foreign_hook_that_merely_mentions_contextmd_hook(self):
+        settings = self.home / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        foreign = {"type": "command", "command": "/usr/local/bin/audit-hook --label contextmd-hook"}
+        settings.write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [foreign]}]}}))
+        self.run_cli("install", "claude", "--base", str(self.base))
+        self.run_cli("install", "claude", "--base", str(self.base))
+        commands = [h["command"] for g in json.loads(settings.read_text())["hooks"]["PreToolUse"] for h in g["hooks"]]
+        self.assertIn(foreign["command"], commands)
+        self.assertEqual(sum(c.startswith("/bin/sh ") for c in commands), 1)
+
+    def test_a_failed_credential_write_keeps_the_working_session(self):
+        self.run_cli("install", "grok", "--base", str(self.base))
+        cred = self.base / "userdata" / "contextmd" / "hook-credential"
+        (cred.parent / "hook-credential.contextmd-tmp").mkdir()  # the atomic write cannot create its temp file
+        done = self.run_cli("install", "grok", "--base", str(self.base), "--renew", check=False)
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(json.loads(cred.read_text())["token"], "tok1")
+        calls = self.calls.read_text().splitlines()
+        self.assertEqual(calls[-1], f"auth session revoke --base-dir {self.base} s2")  # the new one, not s1
+        self.assertNotIn(f"auth session revoke --base-dir {self.base} s1", calls)
+
+    def test_codex_homes_follow_chromeria_resolution(self):
+        custom = self.root.resolve() / "codex-main"
+        custom.mkdir()
+        shadow = self.base / "userdata" / "providers" / "codex" / "codexWork" / "shadow"
+        shadow.mkdir(parents=True)
+        (shadow / "hooks.json").symlink_to(custom / "hooks.json")
+        (custom / "config.toml").write_text("")
+        (shadow / "config.toml").symlink_to(custom / "config.toml")
+        (self.base / "userdata" / "settings.json").write_text(json.dumps({
+            "providers": {"codex": {"homePath": str(custom)}},
+            "providerInstances": {"codexWork": {"driver": "codex", "config": {"homePath": str(custom)}}},
+        }))
+        self.run_cli("install", "codex", "--base", str(self.base))
+        self.assertTrue(any("contextmd-hook" in h["command"]
+                            for gs in json.loads((custom / "hooks.json").read_text())["hooks"].values()
+                            for g in gs for h in g["hooks"]))
+        self.assertFalse((self.home / ".codex" / "hooks.json").exists())
+        import tomllib
+        state = tomllib.loads((custom / "config.toml").read_text())["hooks"]["state"]
+        self.assertTrue(any(k.startswith(str(custom / "hooks.json")) for k in state))
+        self.assertTrue(any(k.startswith(str(shadow / "hooks.json")) for k in state))
+
     def test_refuses_a_directory_that_is_not_a_chromeria_base(self):
         done = self.run_cli("install", "claude", "--base", str(self.root / "nothing"), check=False)
         self.assertEqual(done.returncode, 1)
@@ -293,6 +337,29 @@ m = msgs();
 await hooks["experimental.chat.messages.transform"]({}, m);
 out.afterDeny = m.messages[0].parts.map((p) => p.text);
 out.settles = settles.length;
+
+// A settle that failed in transit is retried on the next model call; a refused one is shown no more.
+let failSettle = 1;
+globalThis.fetch = (url) => {
+  if (url.endsWith("/moment")) {
+    return new Promise((resolve) => replies.push((body) => resolve({ status: 200, json: async () => body })));
+  }
+  settles.push(url);
+  if (failSettle-- > 0) return Promise.reject(new Error("timeout"));
+  return Promise.resolve({ status: 404 });
+};
+const t2 = hooks["chat.message"]({ sessionID: "s" }, {});
+replies[3]({ context: "SECOND" });
+await t2;
+const before = settles.length;
+m = msgs();
+await hooks["experimental.chat.messages.transform"]({}, m);   // settle fails: retried next time
+m = msgs();
+await hooks["experimental.chat.messages.transform"]({}, m);   // settle refused: shown this last time
+out.retried = settles.length - before;
+m = msgs();
+await hooks["experimental.chat.messages.transform"]({}, m);
+out.afterRefusal = m.messages[0].parts.map((p) => p.text);
 console.log(JSON.stringify(out));
 """
 
@@ -317,6 +384,8 @@ class OpenCodePluginTest(unittest.TestCase):
             self.assertNotIn("RULE", out["thrown"])
             self.assertEqual(out["afterDeny"], ["NEW TURN", "RULE"])
             self.assertEqual(out["settles"], 2)
+            self.assertEqual(out["retried"], 2)
+            self.assertEqual(out["afterRefusal"], [])
 
 
 class HookScriptTest(unittest.TestCase):

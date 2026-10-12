@@ -217,7 +217,7 @@ class ContractTest(unittest.TestCase):
         self.server.project_denied_call(self.session, f"t{self.n}", "OTHER-HOOK: read something else")
         second = self.bash("PreToolUse", "git commit -m x")
         self.assertIn("Refs: WID-42", second["permissionDecisionReason"])
-        self.assertEqual(self.outcomes("trailer"), ["hidden", "injected"])
+        self.assertEqual(self.outcomes("trailer"), ["hidden", "awaiting_evidence"])
         self.server.project_denied_call(self.session, f"t{self.n}", second["permissionDecisionReason"])
         self.assertIsNone(self.bash("PreToolUse", "git commit -m x"))
 
@@ -283,7 +283,7 @@ class ContractTest(unittest.TestCase):
         deny = recs[1]
         self.assertEqual((deny["tool_use_id"], deny["run_id"], deny["status"]), ("t1", self.run_id, "ok"))
         s = deny["serves"][0]
-        self.assertEqual((s["matcher"], s["entry"], s["outcome"], s["seam"]), ("exact_key", "pr", "injected", "deny"))
+        self.assertEqual((s["matcher"], s["entry"], s["outcome"], s["seam"]), ("exact_key", "pr", "awaiting_evidence", "deny"))
         self.assertEqual(len(s["version"]), 12)
         self.assertEqual(recs[2]["serves"][0]["outcome"], "unsupported_key")
 
@@ -349,7 +349,8 @@ class ContractTest(unittest.TestCase):
         time.sleep(2.2)  # past the release window
         out = self.bash("PreToolUse", "gh pr create")
         self.assertEqual(out and out["permissionDecision"], "deny")
-        self.assertEqual(self.outcomes("pr"), ["delivery_unverified", "injected"])
+        # A Claude Code deny stays awaiting_evidence until the projection shows what the model saw.
+        self.assertEqual(self.outcomes("pr"), ["delivery_unverified", "awaiting_evidence"])
 
     def test_closed_stdout_leaves_the_deny_unsettled(self):
         entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
@@ -362,7 +363,8 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(p.wait(timeout=10), 0)
         time.sleep(2.2)
         self.assertEqual(self.bash("PreToolUse", "gh pr create")["permissionDecision"], "deny")
-        self.assertEqual(self.outcomes("pr"), ["delivery_unverified", "injected"])
+        # A Claude Code deny stays awaiting_evidence until the projection shows what the model saw.
+        self.assertEqual(self.outcomes("pr"), ["delivery_unverified", "awaiting_evidence"])
 
     def test_broken_config_fails_open(self):
         entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")

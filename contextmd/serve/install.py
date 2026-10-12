@@ -9,8 +9,8 @@ The hook authenticates as an ordinary Chromeria session: install runs
 Chromeria's own ``t3 auth session issue`` (subject ``contextmd-hook``, scope
 ``orchestration:read``, 365 days) and stores the result, token included, in
 ``<base>/userdata/contextmd/hook-credential`` (mode 0600). Installing again
-issues a new session and revokes the one it replaces; ``t3 auth session
-revoke`` ends it. The hook finds the server through Chromeria's own
+reuses it until 30 days before it expires (``--renew`` replaces it) and revokes
+a session it replaces; ``t3 auth session revoke`` ends it. The hook finds the server through Chromeria's own
 ``<base>/userdata/server-runtime.json``. Installing again replaces only
 ContextMD's own hooks; other hooks stay. Every file it changes is first copied
 to ``<file>.contextmd-backup``.
@@ -29,6 +29,7 @@ import json
 import os
 import shlex
 import shutil
+import sys
 import stat
 import subprocess
 import time
@@ -38,7 +39,15 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 HOOK = REPO / "bin" / "contextmd-hook"
-MARK = "contextmd-hook"
+
+
+def _ours(command) -> bool:
+    """A hook command this installer wrote: ``/bin/sh <...>/contextmd-hook <harness> <base>``."""
+    try:
+        parts = shlex.split(str(command))
+    except ValueError:
+        return False
+    return len(parts) == 4 and parts[0] == "/bin/sh" and os.path.basename(parts[1]) == "contextmd-hook"
 
 
 class InstallError(RuntimeError):
@@ -122,7 +131,16 @@ def issue_credential(base: Path, t3: str, renew: bool = False) -> Path:
         issued = json.loads(done.stdout)
         if current.get("sessionId") and current["sessionId"] != issued["sessionId"]:
             pending.append(current["sessionId"])
-        current = {k: issued[k] for k in ("sessionId", "token", "expiresAt")}
+        replacement = {k: issued[k] for k in ("sessionId", "token", "expiresAt")}
+        # Save the new session and the old one's pending revocation before revoking anything,
+        # so a failed write never leaves the hooks with a revoked credential.
+        try:
+            _write(p["credential"], json.dumps({**replacement, "revokePending": pending}) + "\n",
+                   mode=0o600, backup=False)
+        except OSError as exc:
+            _t3(t3, "revoke", "--base-dir", str(base), issued["sessionId"])
+            raise InstallError(f"could not save the new hook credential ({exc}); the current one stays in use")
+        current = replacement
     failed = [sid for sid in pending
               if _t3(t3, "revoke", "--base-dir", str(base), sid).returncode != 0]
     _write(p["credential"], json.dumps({**current, "revokePending": failed} if failed else current) + "\n",
@@ -140,7 +158,7 @@ def _merge_hooks(path: Path, block: dict) -> None:
     for event, groups in hooks.items():
         kept = []
         for g in groups:
-            entries = [h for h in g.get("hooks", []) if MARK not in str(h.get("command", ""))]
+            entries = [h for h in g.get("hooks", []) if not _ours(h.get("command", ""))]
             if entries or not g.get("hooks"):
                 kept.append({**g, "hooks": entries} if "hooks" in g else g)
         hooks[event] = kept
@@ -150,24 +168,43 @@ def _merge_hooks(path: Path, block: dict) -> None:
     _write(path, json.dumps(data, indent=2) + "\n")
 
 
-def codex_homes(base: Path) -> list[Path]:
-    """Codex homes of the Chromeria Codex instances on this base (default ``$CODEX_HOME`` or ``~/.codex``)."""
-    default = Path(os.path.expanduser(os.environ.get("CODEX_HOME") or "~/.codex"))
-    settings = base / "userdata" / "settings.json"
-    homes = []
+def codex_homes(base: Path) -> list[tuple[Path, Path]]:
+    """``(shared, effective)`` Codex homes of the enabled Chromeria Codex instances on this base.
+
+    Mirrors Chromeria's resolution (CodexHomeLayout, CodexManagedHome): the shared home is
+    ``homePath`` or ``~/.codex``; the effective home is the shadow home, set explicitly or, for
+    any instance other than ``codex``, ``<base>/userdata/providers/codex/<id>/shadow``. The
+    primary instance falls back to the legacy ``providers.codex`` settings.
+    """
     try:
-        instances = json.loads(settings.read_text()).get("providerInstances") or {}
+        settings = json.loads((base / "userdata" / "settings.json").read_text())
     except (OSError, ValueError):
-        instances = {}
-    for inst in instances.values():
-        if inst.get("driver") == "codex" and inst.get("enabled", True):
-            home = (inst.get("config") or {}).get("homePath") or ""
-            homes.append(Path(os.path.expanduser(home)) if home else default)
-    return sorted(set(homes or [default]))
+        settings = {}
+    instances = dict(settings.get("providerInstances") or {})
+    if "codex" not in instances:
+        instances["codex"] = {"driver": "codex", "config": (settings.get("providers") or {}).get("codex") or {}}
+    homes = set()
+    for instance_id, inst in instances.items():
+        if inst.get("driver") != "codex" or inst.get("enabled", True) is False:
+            continue
+        config = inst.get("config") or {}
+        home = str(config.get("homePath") or "").strip()
+        shared = Path(os.path.expanduser(home)).resolve() if home else Path.home() / ".codex"
+        shadow = str(config.get("shadowHomePath") or "").strip()
+        if not shadow and instance_id != "codex":
+            shadow = str(base / "userdata" / "providers" / "codex" / instance_id / "shadow")
+        effective = Path(os.path.expanduser(shadow)).resolve() if shadow else shared
+        homes.add((shared, effective))
+    return sorted(homes)
 
 
-def trust_codex(home: Path, cwd: Path) -> int:
-    """Record the trust hash of ContextMD's hooks in ``<home>/config.toml``; returns how many."""
+def trust_codex(shared: Path, effective: Path, cwd: Path) -> int:
+    """Record the trust hash of ContextMD's hooks as Codex sees them from the effective home.
+
+    The hooks live in ``<shared>/hooks.json``; a shadow home reaches them by its own path, so
+    Codex keys and trusts them there, in ``<effective>/config.toml``. Returns how many.
+    """
+    home = effective
     proc = subprocess.Popen(["codex", "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, env={**os.environ, "CODEX_HOME": str(home)}, text=True)
 
@@ -191,7 +228,7 @@ def trust_codex(home: Path, cwd: Path) -> int:
     finally:
         proc.terminate()
     ours = [h for d in listed.get("data", []) for h in d.get("hooks", [])
-            if MARK in str(h.get("command", "")) and Path(h["sourcePath"]).resolve() == (home / "hooks.json").resolve()]
+            if _ours(h.get("command", "")) and Path(h["sourcePath"]).resolve() == (shared / "hooks.json").resolve()]
     config = home / "config.toml"
     original = config.read_text() if config.exists() else ""
     text = _set_trust(original, {h["key"]: h["currentHash"] for h in ours})
@@ -256,10 +293,16 @@ def install(harness: str, base: Path, t3: str = "t3", renew: bool = False) -> li
         _merge_hooks(settings, hooks_block(harness, base))
         written.append(str(settings))
     elif harness == "codex":
-        for codex_home in codex_homes(base):
-            _merge_hooks(codex_home / "hooks.json", hooks_block(harness, base))
-            trust_codex(codex_home, home)
-            written += [str(codex_home / "hooks.json"), str(codex_home / "config.toml")]
+        for shared, effective in codex_homes(base):
+            _merge_hooks(shared / "hooks.json", hooks_block(harness, base))
+            written.append(str(shared / "hooks.json"))
+            if not effective.is_dir():
+                # A shadow home appears when its instance first starts; install again after that.
+                print(f"contextmd-serve install: {effective} does not exist yet; trust its hooks by "
+                      f"installing again after that Codex instance has started", file=sys.stderr)
+                continue
+            trust_codex(shared, effective, home)
+            written.append(str(effective / "config.toml"))
     elif harness == "grok":
         target = home / ".grok" / "hooks" / "contextmd.json"
         _write(target, json.dumps(hooks_block(harness, base), indent=2) + "\n")

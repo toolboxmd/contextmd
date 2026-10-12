@@ -90,10 +90,13 @@ bin/contextmd-serve install claude --base ~/.t3     # also: codex, grok, opencod
 Install issues an ordinary Chromeria session for the hooks with Chromeria's
 `t3 auth session issue` (subject `contextmd-hook`, scope `orchestration:read`,
 365 days) and stores it in `<base>/userdata/contextmd/hook-credential`, mode
-0600. It writes the harness's user-level hook configuration (for Codex, every
-Codex home the Chromeria instances use, with trust hashes), keeps other hooks,
-and backs up each changed file as `<file>.contextmd-backup`. Installing again
-issues a new session and revokes the old one. The hook finds the server through
+0600; installing again reuses it until 30 days before it expires, and
+`--renew` replaces it at once. A replaced session is revoked; if that fails,
+the install fails and the next one retries it. Install writes the harness's
+user-level hook configuration (for Codex, the Codex home of every Chromeria
+Codex instance, with trust hashes recorded where that instance's Codex reads
+them), keeps other hooks, file permissions and symlinks, and backs up each
+changed file as `<file>.contextmd-backup`. The hook finds the server through
 Chromeria's `<base>/userdata/server-runtime.json`. With the server down, the
 hook gives up within a second and the call runs unserved.
 

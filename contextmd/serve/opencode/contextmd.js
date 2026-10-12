@@ -55,16 +55,16 @@ async function moment(raw) {
     });
     if (res.status !== 200) return null;
     const reply = await res.json();
-    // True only when the module confirmed the settle; a late one is refused and logged
-    // delivery_unverified, so the rule is served again rather than counted as shown.
+    // "confirmed" (204), "refused" (the module released or never held it: stop showing it;
+    // it serves the rule again if it still applies) or "retry" (network, timeout, 5xx).
     const settle = () =>
       fetch(`${ep.url}/contextmd/v1/settle/${delivery}`, {
         method: "POST",
         headers: { authorization: `Bearer ${ep.token}` },
         signal: AbortSignal.timeout(300),
       })
-        .then((r) => r.status === 204)
-        .catch(() => false);
+        .then((r) => (r.status === 204 ? "confirmed" : r.status >= 500 ? "retry" : "refused"))
+        .catch(() => "retry");
     return { reply, settle };
   } catch {
     return null;
@@ -80,7 +80,7 @@ const turns = new Map();
 function queue(sessionID, turn, text, settle) {
   if ((turns.get(sessionID) || 0) !== turn) return;
   const list = served.get(sessionID) || [];
-  list.push({ text, settle, settled: false });
+  list.push({ text, settle, state: "pending" });
   served.set(sessionID, list);
 }
 
@@ -101,6 +101,7 @@ export default async function contextmd(ctx) {
       const list = last && served.get(last.info.sessionID);
       if (!list || list.length === 0) return;
       for (const item of list) {
+        if (item.state === "refused") continue;
         last.parts.push({
           id: `prt_contextmd${randomBytes(6).toString("hex")}`,
           sessionID: last.info.sessionID,
@@ -109,10 +110,9 @@ export default async function contextmd(ctx) {
           text: item.text,
           synthetic: true,
         });
-        if (!item.settled) {
-          item.settled = true; // one settle attempt per reply, confirmed or not
-          await item.settle();
-        }
+        // Settle until the module confirms; a refused delivery is shown no more after this call.
+        if (item.state === "pending") item.state = await item.settle();
+        if (item.state === "retry") item.state = "pending";
       }
     },
     "tool.execute.before": async (input, output) => {
