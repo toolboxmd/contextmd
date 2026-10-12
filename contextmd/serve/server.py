@@ -7,7 +7,9 @@ atomically; its serves are logged ``pending``. The hook then writes the reply,
 and a second transaction settles the reservation: ``injected`` once the output
 is written, ``delivery_failed`` with the budget, dedupe and deny-once released
 when writing fails. A reservation whose process died before settling is
-released as ``delivery_unverified`` by the next moment after ``STALE_SECONDS``.
+released as ``delivery_unverified`` by the next moment: at once when its
+process no longer exists, else after ``STALE_SECONDS``. Live writers keep
+their reservations, so concurrent hooks still share one atomic budget.
 Dedupe and deny-once count only settled serves, so an unsettled reservation
 never suppresses a later deny: concurrent calls may each deny, which fails
 toward the rule being read.
@@ -70,7 +72,7 @@ CREATE TABLE IF NOT EXISTS denied (host TEXT, session TEXT, entry TEXT, version 
     settled INTEGER DEFAULT 0, PRIMARY KEY (host, session, entry, version, seq));
 CREATE TABLE IF NOT EXISTS moments (seq INTEGER PRIMARY KEY, record TEXT);
 CREATE TABLE IF NOT EXISTS pending (seq INTEGER PRIMARY KEY, host TEXT, session TEXT, turn INTEGER,
-    chars INTEGER, created REAL);
+    chars INTEGER, created REAL, pid INTEGER);
 """
 
 
@@ -138,8 +140,9 @@ class Serving:
             reply, record = self._handle(moment)
             self.db.execute("UPDATE moments SET record=? WHERE seq=?", (json.dumps(record), seq))
             if any(s.get("outcome") == "pending" for s in record["serves"]):
-                self.db.execute("INSERT INTO pending VALUES (?, ?, ?, ?, ?, ?)",
-                                (seq, moment.host, moment.session, record["turn"], self.chars, self.clock()))
+                self.db.execute("INSERT INTO pending VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                (seq, moment.host, moment.session, record["turn"], self.chars, self.clock(),
+                                 os.getpid()))
         return reply, seq
 
     def settle(self, seq: int, outcome: str) -> None:
@@ -180,9 +183,11 @@ class Serving:
         self.db.execute("UPDATE moments SET record=? WHERE seq=?", (json.dumps(record), seq))
 
     def _release_stale(self) -> None:
+        """Release reservations whose hook is gone (killed by the host) or older than ``STALE_SECONDS``."""
         cutoff = self.clock() - STALE_SECONDS
-        for (seq,) in self.db.execute("SELECT seq FROM pending WHERE created < ?", (cutoff,)).fetchall():
-            self._settle(seq, "delivery_unverified")
+        for seq, created, pid in self.db.execute("SELECT seq, created, pid FROM pending").fetchall():
+            if created < cutoff or not _alive(pid):
+                self._settle(seq, "delivery_unverified")
 
     # -- state ------------------------------------------------------------
 
@@ -337,6 +342,18 @@ class Serving:
                 fits(e, record, key)
         out = text()
         return Context(out) if out else Nothing()
+
+
+def _alive(pid: int) -> bool:
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def log_records(config: Config):

@@ -229,10 +229,11 @@ class HookSeamTest(unittest.TestCase):
             out = self.bash("PreToolUse", command, n)
             self.assertEqual(out and out["permissionDecision"], "deny", command)
 
-    def test_killed_hook_does_not_spend_the_deny(self):
-        entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
-        ev = {"hook_event_name": "PreToolUse", "session_id": self.session, "cwd": str(self.repo),
-              "tool_name": "Bash", "tool_input": {"command": "gh pr create"}, "tool_use_id": "t1"}
+    def kill_while_writing(self, event, command, n):
+        """Run the real hook with a full stdout pipe and kill it once its reservation is pending."""
+        before = len(self.log()) if (self.state / "serving.db").exists() else 0
+        ev = {"hook_event_name": event, "session_id": self.session, "cwd": str(self.repo),
+              "tool_name": "Bash", "tool_input": {"command": command}, "tool_use_id": f"t{n}"}
         env = dict(os.environ, CONTEXTMD_SERVING_CONFIG=str(self.cfg))
         r, w = os.pipe()
         os.set_blocking(w, False)
@@ -242,21 +243,40 @@ class HookSeamTest(unittest.TestCase):
         except BlockingIOError:
             pass
         os.set_blocking(w, True)
-        # The hook reserves, then blocks writing to the full pipe; the host kills it.
         p = subprocess.Popen([sys.executable, "-I", str(BIN), "hook", "claude-code"], stdin=subprocess.PIPE,
                              stdout=w, stderr=subprocess.DEVNULL, env=env)
         p.stdin.write(json.dumps(ev).encode())
         p.stdin.close()
         for _ in range(100):
             if (self.state / "serving.db").exists() and any(
-                    s["outcome"] == "pending" for r_ in self.log() for s in r_["serves"]):
+                    s["outcome"] == "pending" for r_ in self.log()[before:] for s in r_["serves"]):
                 break
             time.sleep(0.05)
+        else:
+            self.fail("the hook never reserved")
         p.kill()
         p.wait()
         os.close(w)
         os.close(r)
+
+    def test_killed_hook_does_not_spend_the_deny(self):
+        entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
+        self.kill_while_writing("PreToolUse", "gh pr create", 1)
         self.assertEqual(self.bash("PreToolUse", "gh pr create", 2)["permissionDecision"], "deny")
+
+    def test_killed_hook_does_not_hold_budget_from_the_retry(self):
+        for i in range(6):
+            entry(self.keys_dir, f"e{i}", f"rule {i} " + "y" * 1490, command=f"tool{i}")
+        entry(self.keys_dir, "pr", "P" * 600, command="gh pr create", must_know_before="true")
+        self.fire("UserPromptSubmit", prompt="x")
+        for i in range(6):
+            self.assertIsNotNone(self.bash("PostToolUse", f"tool{i}", i))
+        # The deny still fits the turn, but only once.
+        self.kill_while_writing("PreToolUse", "gh pr create", 10)
+        out = self.bash("PreToolUse", "gh pr create", 11)
+        self.assertEqual(out and out["permissionDecision"], "deny")
+        outcomes = [s["outcome"] for r in self.log() for s in r["serves"] if s.get("entry") == "pr"]
+        self.assertEqual(outcomes, ["delivery_unverified", "injected"])
 
     def test_failed_output_releases_the_deny(self):
         entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
