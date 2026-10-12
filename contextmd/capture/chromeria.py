@@ -117,3 +117,16 @@ def run_window(con: sqlite3.Connection, thread_id: str) -> tuple[str | None, str
         return None, None
     first, last = json.loads(rows[0][0]), json.loads(rows[-1][0])
     return first.get("startedAt"), last.get("completedAt")
+
+
+def run_finished(con: sqlite3.Connection, thread_id: str) -> bool | None:
+    """Whether a thread's latest run has completed; None when it has no runs.
+
+    A model may write its output file in several steps, so a delegated job's
+    output counts only once its run is over.
+    """
+    row = con.execute(f"SELECT payload_json FROM {RUNS} WHERE thread_id=? ORDER BY ordinal DESC LIMIT 1",
+                      (thread_id,)).fetchone()
+    if row is None:
+        return None
+    return bool(json.loads(row[0]).get("completedAt"))

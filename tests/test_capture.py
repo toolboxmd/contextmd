@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from contextmd.capture import config, items, kinds, observer, transcript  # noqa: E402
+from contextmd.capture import compare, config, items, kinds, observer, transcript  # noqa: E402
 from contextmd.capture.chromeria import Item, Thread  # noqa: E402
 from contextmd.capture.run import Capture, RunError  # noqa: E402
 from contextmd.capture.store import Busy, Store  # noqa: E402
@@ -118,6 +118,7 @@ class RunTest(unittest.TestCase):
         threads += [{"id": f"{DT}contextmd-capture-old-s000-judge-1", "parent": "P"}]
         threads += [{"id": f"{DT}contextmd-capture-child-{n}", "parent": "P",
                      "run": ("2026-10-12T10:00:00Z", "2026-10-12T10:02:00Z")} for n in range(3)]
+        threads += [{"id": f"{DT}contextmd-capture-busy", "parent": "P", "run": ("2026-10-12T10:00:00Z", None)}]
         its = [
             item(U, 1, "2026-10-09T23:00:00Z", "user_message", text="old question", createdBy="user"),
             item(U, 2, "2026-10-10T09:00:00Z", "user_message", text="never use rm -rf", createdBy="user"),
@@ -209,7 +210,9 @@ class RunTest(unittest.TestCase):
         sol = next(j for j in due if j["job"].endswith("extract-sol"))
         self.assertEqual(sol["target"]["model"], "gpt-6.1-sol")
         self.assertTrue(sol["clientRequestId"].startswith("contextmd-capture-"))
-        self.assertIn(sol["output"], sol["task"])
+        brief = Path(sol["task"].split("brief at ", 1)[1].split(" and do", 1)[0]).read_text()
+        self.assertIn(sol["output"], brief)
+        self.assertIn("contract: extract-v1", brief)
         self.dispatch_all("extract")
         useg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
         for s in run["segments"]:
@@ -258,6 +261,32 @@ class RunTest(unittest.TestCase):
         self.assertEqual(len(again), 1)
         self.assertTrue(again[0]["clientRequestId"].endswith("-2"))
         self.assertFalse(Path(job["output"]).exists())
+
+    def test_half_written_output_waits_for_the_run_and_stale_judge_inputs_are_redone(self):
+        run = self.prepare()
+        seg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
+        sdir = self.cap.store.runs / run["run_id"] / "seg" / seg
+        first = min(int(n) for n in self.lines(run, seg))
+        self.cap.record(f"{seg}-extract-sol", task_id="t-sol", child_thread=f"{DT}contextmd-capture-child-0")
+        self.cap.record(f"{seg}-extract-grok", task_id="t-grok", child_thread=f"{DT}contextmd-capture-busy")
+        (sdir / "extract-sol.md").write_text(md(("one", first, "user")))
+        (sdir / "extract-grok.md").write_text(md(("one", first, "user")))  # grok still writing
+        nxt = self.cap.next_jobs()
+        self.assertNotIn(f"{seg}-judge", [j["job"] for j in nxt["due"]])
+        self.assertIn({"job": f"{seg}-extract-grok", "task_id": "t-grok", "output": "running"}, nxt["waiting"])
+        # The pre-fix race: judge inputs built from the half-written list, then grok adds an item.
+        self.cap.record(f"{seg}-extract-grok", task_id="t-grok", child_thread=f"{DT}contextmd-capture-child-0")
+        self.cap.next_jobs()
+        self.cap.record(f"{seg}-judge", task_id="t-judge", child_thread=f"{DT}contextmd-capture-child-1")
+        (sdir / "extract-grok.md").write_text(md(("one", first, "user"), ("two", first, "user")))
+        (sdir / "judge.jsonl").write_text(json.dumps(
+            {"a": ["A01"], "b": ["B01"], "grade": "keep", "learned_from": "user"}) + "\n")
+        self.assertIn(f"{seg}-judge", [i["job"] for i in self.cap.next_jobs()["invalid"]])
+        self.cap.record(f"{seg}-judge", failed=True, note="stale inputs")
+        again = [j for j in self.cap.next_jobs()["due"] if j["job"] == f"{seg}-judge"]
+        self.assertEqual(len(again), 1)
+        listed = sum((sdir / f"judge-{side}.jsonl").read_text().count("\n") for side in "AB")
+        self.assertEqual(listed, 3)
 
     def test_cursor_moves_only_past_leading_committed_segments(self):
         run = self.prepare()
@@ -324,6 +353,30 @@ class SyncGateTest(unittest.TestCase):
             observer.sync(self.script(f"echo '{failed}'\n"))
         ok = json.dumps({"harnesses": [{"harness": "grok", "failed": []}]})
         self.assertEqual(observer.sync(self.script(f"echo '{ok}'\n"))["harnesses"][0]["harness"], "grok")
+
+
+class CompareTest(unittest.TestCase):
+    def it(self, title, ts, grade="keep", thread="T", seg="s000"):
+        return {"key": {"thread": thread}, "grade": grade, "title": title, "what": title,
+                "so_what": "", "source_time": ts, "run": {"segment": seg}}
+
+    def test_lost_extra_and_wrong_with_distance_to_cut(self):
+        d = Path(tempfile.mkdtemp())
+        whole = [self.it("a", "2026-10-10T10:00:00Z"), self.it("b", "2026-10-10T11:58:00Z"),
+                 self.it("junk", "2026-10-10T10:00:00Z", grade="junk"), self.it("other", "2026-10-10T10:00:00Z", thread="X")]
+        seg = [self.it("a2", "2026-10-10T10:00:00Z"), self.it("c", "2026-10-10T12:03:00Z", seg="s001")]
+        info = compare.prepare(d, "T", whole, seg)
+        self.assertEqual((info["whole"], info["segmented"]), (2, 2))
+        (d / "pairs.jsonl").write_text(
+            '{"w":["W01"],"s":["S01"],"segmented_wrong":true,"note":"stale belief"}\n'
+            '{"w":["W02"],"s":[],"note":"cut"}\n{"w":[],"s":["S02"],"note":"new"}\n')
+        r = compare.result(d, ["2026-10-10T12:00:00Z"])
+        self.assertEqual((r["matched"], r["lost_by_segmenting"], r["only_segmented"], r["segmented_wrong"]),
+                         (1, 1, 1, 1))
+        self.assertEqual(r["lost"][0]["minutes_from_cut"], 2.0)
+        (d / "pairs.jsonl").write_text('{"w":["W01"],"s":["S01"]}\n')
+        with self.assertRaises(ValueError):
+            compare.result(d, [])
 
 
 if __name__ == "__main__":

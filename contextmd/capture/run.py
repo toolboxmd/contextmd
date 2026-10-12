@@ -192,10 +192,18 @@ class Capture:
         return items_mod.parse_extract(p.read_text(encoding="utf-8"))
 
     def _output_state(self, run: dict, job_id: str, job: dict) -> str:
-        """done, missing or invalid: whether the job's output satisfies its contract."""
+        """done, missing, running or invalid: whether the job's output satisfies its contract.
+
+        ``running`` while the job's child thread is still working: its output
+        file may be half written.
+        """
         out = self._paths(run, job)["output"]
         if not out.exists():
             return "missing"
+        live = next((a for a in reversed(job["attempts"]) if a.get("status") != "failed"), None)
+        if live and live.get("child_thread") and \
+                chromeria.run_finished(self.ch, live["child_thread"]) is False:
+            return "running"
         try:
             if job["step"] == "extract":
                 self._extract_items(run, job["segment"], job["extractor"])
@@ -215,6 +223,18 @@ class Capture:
         write_json(sdir / "judge-sides.json", sides)
         return {"extracts": extracts, "sides": sides, "ids": ids}
 
+    def _inputs_stale(self, run: dict, seg_id: str) -> bool:
+        """True when the judge's lists no longer match the extractors' outputs."""
+        sdir = self._run_dir(run["run_id"]) / "seg" / seg_id
+        sides = read_json(sdir / "judge-sides.json")
+        if sides is None:
+            return False
+        for side in ("A", "B"):
+            listed = (sdir / f"judge-{side}.jsonl").read_text(encoding="utf-8").count("\n")
+            if listed != len(self._extract_items(run, seg_id, sides[side])):
+                return True
+        return False
+
     def _judged(self, run: dict, seg_id: str):
         sdir = self._run_dir(run["run_id"]) / "seg" / seg_id
         extracts = {n: self._extract_items(run, seg_id, n) for n in run["targets"]["extractors"]}
@@ -222,6 +242,8 @@ class Capture:
         _, ids = items_mod.blind_lists(extracts, f"{run['run_id']}-{seg_id}")
         if not any(extracts.values()):
             return extracts, ids, []
+        if self._inputs_stale(run, seg_id):
+            raise items_mod.InvalidOutput("judge inputs are older than the extractor outputs")
         groups = items_mod.parse_judge((sdir / "judge.jsonl").read_text(encoding="utf-8"), ids)
         return extracts, ids, groups
 
@@ -234,6 +256,13 @@ class Capture:
         return _fill((PROMPTS / "judge.md").read_text(), transcript=p["transcript"],
                      items_a=sdir / "judge-A.jsonl", items_b=sdir / "judge-B.jsonl",
                      output=p["output"])
+
+    def _brief(self, run: dict, job_id: str, job: dict) -> str:
+        """Write the job's full prompt beside its segment; the task text points at it."""
+        path = self._paths(run, job)["dir"] / f"{job_id}.brief.md"
+        path.write_text(self._task_text(run, job_id, job), encoding="utf-8")
+        return (f"Read the brief at {path} and do exactly what it says. "
+                "Read only the files it names and write only its output file.")
 
     def next_jobs(self) -> dict:
         """Due jobs (to dispatch now), waiting jobs (dispatched, no valid output yet)."""
@@ -257,9 +286,14 @@ class Capture:
                                 for n in run["targets"]["extractors"]}
                     if not any(extracts.values()):
                         continue  # nothing to judge; commit records zero items
-                    if not (self._paths(run, job)["dir"] / "judge-sides.json").exists():
+                    live = job["attempts"] and job["attempts"][-1].get("status") != "failed"
+                    if not live and (not (self._paths(run, job)["dir"] / "judge-sides.json").exists()
+                                     or self._inputs_stale(run, job["segment"])):
                         self._judge_inputs(run, job["segment"])
                 last = job["attempts"][-1] if job["attempts"] else None
+                if state == "running":
+                    waiting.append({"job": job_id, "task_id": last and last["task_id"], "output": state})
+                    continue
                 if last and last.get("status") != "failed":
                     entry = {"job": job_id, "task_id": last["task_id"], "output": state}
                     (invalid if state == "invalid" else waiting).append(entry)
@@ -272,7 +306,7 @@ class Capture:
                     "clientRequestId": f"{self.cfg['own_task_prefix']}{run['run_id']}-{job_id}-{attempt}",
                     "title": f"contextmd capture {job_id}",
                     "output": str(self._paths(run, job)["output"]),
-                    "task": self._task_text(run, job_id, job)})
+                    "task": self._brief(run, job_id, job)})
             return {"run_id": run["run_id"], "due": due, "waiting": waiting, "invalid": invalid}
 
     def _segment(self, run: dict, seg_id: str) -> dict:

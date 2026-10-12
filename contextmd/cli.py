@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 
-from .capture import config, observer, report
+from .capture import compare, config, observer, report
 from .capture.run import Capture, RunError
-from .capture.store import Busy, read_json, write_json
+from .capture.store import Busy, write_json
 
 
 def _day_bounds(day: str) -> tuple[str, str]:
@@ -40,6 +41,11 @@ def main(argv=None) -> int:
     cs.add_parser("commit", help="write judged segments to the queue and move cursors")
     rp = cs.add_parser("report", help="counts per step and thread kind, cost per model step")
     rp.add_argument("--run")
+    cp = cs.add_parser("compare", help="boundary check: whole-thread run versus segmented run")
+    cp.add_argument("--whole-run", required=True)
+    cp.add_argument("--segmented-run", required=True)
+    cp.add_argument("--thread", required=True)
+    cp.add_argument("--result", action="store_true", help="read the compare job's output")
     ns = ap.parse_args(argv)
     cfg = config.load(ns.config)
     cap_ = Capture(cfg)
@@ -60,6 +66,19 @@ def main(argv=None) -> int:
                               failed=ns.failed, note=ns.note)
         elif ns.cmd == "commit":
             out = cap_.commit()
+        elif ns.cmd == "compare":
+            seg = cap_.load(ns.segmented_run)
+            name = hashlib.sha256(ns.thread.encode()).hexdigest()[:12]
+            out_dir = cap_.store.runs / ns.whole_run / "compare" / name
+            if ns.result:
+                cuts = [s_["last"]["ts"] for s_ in seg["segments"] if s_["thread"] == ns.thread][:-1]
+                out = compare.result(out_dir, cuts)
+                write_json(out_dir / "result.json", out)
+            else:
+                out = compare.prepare(
+                    out_dir, ns.thread,
+                    report.run_items(cap_.store.runs / ns.whole_run, cap_.store.queue, ns.whole_run),
+                    report.run_items(cap_.store.runs / ns.segmented_run, cap_.store.queue, ns.segmented_run))
         else:
             run = cap_.load(ns.run) if ns.run else _latest(cap_)
             rdir = cap_.store.runs / run["run_id"]
