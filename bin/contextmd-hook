@@ -6,7 +6,8 @@
 # the credential is a Chromeria bearer session `contextmd-serve install` stored in
 # <base-dir>/userdata/contextmd/hook-credential. Fails open: with the off file, no
 # server, no credential, a refused or slow server, the harness call proceeds unserved
-# and the agent sees nothing. The settle call runs only after curl exited 0, which it
+# and the agent sees nothing; an error status (an older server without the route, a 5xx)
+# prints no body either (--fail). The settle call runs only after curl exited 0, which it
 # does only when all of the reply reached stdout.
 harness=$1 base=$2
 dir=$base/userdata/contextmd
@@ -16,7 +17,7 @@ token=$(sed -n 's/.*"token" *: *"\([^"]*\)".*/\1/p' "$dir/hook-credential" 2>/de
 [ -n "$url" ] && [ -n "$token" ] || exit 0
 delivery=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
 exec 4>&1
-code=$(curl -s --connect-timeout 0.1 -m 1 -o /dev/fd/4 -w '%{http_code}' \
+code=$(curl -s --fail --connect-timeout 0.1 -m 1 -o /dev/fd/4 -w '%{http_code}' \
   -H "authorization: Bearer $token" -H "x-contextmd-harness: $harness" -H "x-contextmd-delivery: $delivery" \
   -H 'content-type: application/json' --data-binary @- "$url/contextmd/v1/moment") || exit 0
 [ "$code" = 200 ] || exit 0

@@ -511,6 +511,43 @@ class HookScriptTest(unittest.TestCase):
             self.assertEqual((down.returncode, down.stdout), (0, ""))
             self.assertLess(time.time() - started, 1.5)
 
+    def test_an_error_status_prints_nothing(self):
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("content-length") or 0))
+                status = 404 if self.path.endswith("/moment") and self.server.flip else 500
+                body = b"Not Found"
+                self.send_response(status)
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), H)
+        server.flip = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        hook = BIN.parent / "contextmd-hook"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                base = Path(d)
+                (base / "userdata" / "contextmd").mkdir(parents=True)
+                (base / "userdata" / "server-runtime.json").write_text(
+                    json.dumps({"origin": f"http://127.0.0.1:{server.server_port}"}))
+                (base / "userdata" / "contextmd" / "hook-credential").write_text(json.dumps({"token": "tok"}))
+                for flip in (True, False):  # an older server without the route (404), then a 5xx
+                    server.flip = flip
+                    done = subprocess.run(["/bin/sh", str(hook), "claude", str(base)], input="{}",
+                                          capture_output=True, text=True, timeout=10)
+                    self.assertEqual((done.returncode, done.stdout), (0, ""))
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()
