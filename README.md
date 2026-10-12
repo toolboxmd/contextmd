@@ -3,10 +3,15 @@ Local-first context and memory system for AI agents, built on Markdown.
 
 ## Serving
 
-Serving gives an agent stored knowledge before its next decision. This first
-path covers exact keys on Claude Code (#11). Host hooks are thin: each hook
-event becomes one moment, `contextmd/serve/server.py` decides what to serve,
-and the hook prints the reply. Requirements: Python 3.12, no other packages.
+Serving gives an agent stored knowledge before its next decision, inside
+Chromeria. Each harness hook (Claude Code, Codex, Grok Build, OpenCode)
+forwards its raw event to the serving module of the local Chromeria server,
+which matches it against the stores below, decides what to serve or deny, and
+logs the moment. Serving state and the serving log live in Chromeria
+(`<base>/userdata/contextmd.sqlite`); this repository holds the knowledge, the
+store check and the hook installer. Sessions outside Chromeria are not served.
+Requirements: Python 3.12, `curl`, and a Chromeria build with the serving
+module.
 
 ### Exact-key entries
 
@@ -30,8 +35,14 @@ Answer every prompt of the PR template before opening a PR.
   hit costs one extra model round and still delivers the rule.
 - `path` is a glob on the repository-relative path of a file tool (`**` spans
   directories).
-- `error` matches a substring of a failed tool's error, compared lowercase with
-  digits and whitespace collapsed.
+- `error` matches a substring of the failure text or of the tool's output,
+  compared lowercase with digits and whitespace collapsed. Output counts
+  because agents often run `cmd; echo "exit=$?"`, so the call itself succeeds,
+  and Codex reports no failure at all. A printed non-zero exit (`exit=1`,
+  `exit code 2`) also marks the call failed.
+- `target` (must-know-before entries only) makes a pointer rule: the deny names
+  that file, relative to the entry, and the rule lifts once the agent is seen
+  reading it. Without `target` the rule text is in the deny itself.
 - Keys may repeat; any one match serves the entry. The body must stay under
   1,800 UTF-8 bytes, because Claude Code shows only a 2 KB preview of larger
   hook context.
@@ -42,57 +53,61 @@ Answer every prompt of the PR template before opening a PR.
 
 ### What is served when
 
-| Moment (Claude Code event) | Served |
+| Moment | Served |
 | --- | --- |
-| Session start (`SessionStart`) | The session-start files, outside the turn budget. After compaction or `/clear` a new context epoch starts and the files are served again. |
-| User message (`UserPromptSubmit`) | Starts a new turn and a new 10,000-character budget: 2,000 characters are kept for denies and 8,000 are for served context. |
-| Before a tool call (`PreToolUse`) | A matching `must-know-before` entry denies the call once per entry version per session, with the entry as the reason. The retry passes. Denies use their own pool, so served context never blocks them; a deny that does not fit that pool still denies, naming the entry and its file. One deny carries only whole rules within the 2,000-byte output limit; a rule that does not fit waits and denies its next matching call. |
-| Tool result or failure (`PostToolUse`, `PostToolUseFailure`) | Other matching entries, as added context. First fit wins within the 8,000-character serve pool and the 2,000-byte limit per hook output; the rest are cut. |
-| Before done (`Stop`) | Logged only; nothing is served yet. |
+| Session start | The session-start files, outside the turn budgets (Claude Code). After compaction or `/clear` a new context epoch starts and they are served again. |
+| User message | A new Chromeria run is a new turn: an 8,000-byte serve budget and a 2,000-byte deny budget. |
+| Before a tool call | A matching must-know-before entry denies the call. A pointer rule keeps denying until the agent reads its target in this session and context epoch; an inline rule lifts once the model was shown it whole. After 3 denies without that, the next call passes, logged `not_read_capped`. One deny carries every whole rule that fits; the rest deny their next matching call. |
+| Tool result or failure | Other matching entries, first fit within the serve budget and 2,000 bytes per output. On Grok, which discards this output, they are printed at the next `PreToolUse`. |
+| Before done | Logged only. |
 
-An entry is served at most once per turn. Every moment writes one log record
-with the moment id, kind, context epoch, turn, the commit of each store
-loaded, and per entry its lane, id, version, outcome and remote status.
+Served text says it comes from the user's own ContextMD store. On OpenCode it is
+added to the user's message rather than the tool output.
 
-| Outcome | Meaning |
-| --- | --- |
-| `pending` | Reserved; the hook has not finished writing its output yet. |
-| `injected` | The hook wrote the text to the host. |
-| `delivery_failed` | Writing the output failed; budget, dedupe and deny-once are released. |
-| `delivery_unverified` | The hook process ended before settling; the next moment after 10 seconds releases the reservation. |
-| `selected` | Matched before a tool call; served at the tool result. |
-| `deduped` | Already delivered this turn, or its deny was already delivered this session. Only settled serves count, so an unfinished reservation never suppresses a deny. |
-| `cut_budget` | Did not fit the turn budget (`cut: turn`) or the per-output limit (`cut: moment`). |
-| `unsupported_key` | The tool input had a shape the exact-key lane cannot read. |
-| `not_on_machine` | A session-start file is missing. |
-
-The log never holds prompt, command or result text. Read it with
-`bin/contextmd-serve log [--session <id>]`.
+A deny counts as shown only with evidence. On Claude Code and Grok, Chromeria
+records the text the model saw for a denied call; when another hook's deny
+replaced this one, the rule stays armed and that deny does not count toward
+the cap. Elsewhere, the hook confirming it wrote the reply is the evidence.
 
 ### Set up
 
-Configuration lives in `~/.config/contextmd/serving.json`, or the file named by
-`CONTEXTMD_SERVING_CONFIG`:
+The stores and session-start files are named in `~/.config/contextmd/serving.json`
+(or the file in `CONTEXTMD_SERVING_CONFIG`, read by the Chromeria server):
 
 ```json
 {
   "exact_keys": ["~/.local/share/contextmd/exact-keys"],
-  "session_start": [{"path": "~/notes/PACK.md", "max_chars": 4000}],
-  "turn_budget": 10000,
-  "state_dir": "~/.local/state/contextmd/serving"
+  "session_start": [{"path": "~/notes/PACK.md", "max_chars": 4000}]
 }
 ```
 
-All keys are optional; the values above are the defaults, except
-`session_start`, which defaults to none. `bin/contextmd-serve hooks claude-code`
-prints the `hooks` block for a Claude Code settings file. The hook fails open:
-on any error it prints nothing and appends the traceback to
-`<state_dir>/errors.log`.
+Install the hook per harness for the Chromeria base directory:
 
-### Off switch
+```sh
+bin/contextmd-serve install claude --base ~/.t3     # also: codex, grok, opencode
+```
 
-`bin/contextmd-serve off` turns serving off on this machine: hooks then print
-nothing and log nothing, and sessions run as if unserved.
-`bin/contextmd-serve on` turns it back on; `status` shows the state.
+Install issues an ordinary Chromeria session for the hooks with Chromeria's
+`t3 auth session issue` (subject `contextmd-hook`, scope `orchestration:read`,
+365 days) and stores it in `<base>/userdata/contextmd/hook-credential`, mode
+0600; installing again reuses it until 30 days before it expires, and
+`--renew` replaces it at once. A replaced session is revoked; if that fails,
+the install fails and the next one retries it. Install writes the harness's
+user-level hook configuration (for Codex, the Codex home of every Chromeria
+Codex instance, with trust hashes recorded where that instance's Codex reads
+them), keeps other hooks, file permissions and symlinks, and backs up each
+changed file as `<file>.contextmd-backup`. The hook finds the server through
+Chromeria's `<base>/userdata/server-runtime.json`. With the server down, the
+hook gives up within a second and the call runs unserved.
 
-Run the tests with `python3 -m unittest discover -s tests -t .`.
+### Off switch and log
+
+`bin/contextmd-serve off --base ~/.t3` turns serving off for that Chromeria:
+hooks then call nothing. `on` turns it back on; `status` shows the state and
+the credential's expiry. `bin/contextmd-serve log --base ~/.t3 [--session ID]`
+prints the serving log as JSON lines: per moment its run, epoch and status,
+per entry its outcome. It never holds prompt, command or result text.
+
+Run the tests with `python3 -m unittest discover -s tests -t .`. The contract
+suite in `tests/test_contract.py` runs the real hook against a Chromeria dev
+server when `CONTEXTMD_CHROMERIA` names a Chromeria checkout.
