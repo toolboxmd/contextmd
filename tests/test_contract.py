@@ -102,7 +102,8 @@ class Server:
 
     def project_denied_call(self, session, tool_use_id, shown):
         """What Claude Code's adapter projects for a denied call: the text the model saw."""
-        payload = json.dumps({"type": "command_execution", "output": f"Error: PreToolUse:Bash hook error: {shown}"})
+        payload = json.dumps({"type": "command_execution", "output": f"Error: PreToolUse:Bash hook error: {shown}",
+                              "nativeItemRef": {"driver": "claudeAgent", "nativeId": tool_use_id, "strength": "strong"}})
         with sqlite3.connect(self.db, timeout=5) as db:
             db.execute(
                 "INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type,"
