@@ -31,9 +31,18 @@ T3 `delegate_task`:
    and tokens and wall time per model step.
 
 A stopped run resumes with `capture next`: a job with a saved task id is never
-handed out again. If its output breaks the contract, mark it with
+handed out again. A job's output counts only after its Chromeria run has
+completed. `next` lists a job under `invalid` when its output breaks the
+contract or its run failed; mark it with
 `capture record <job> --failed --note <reason>` and it is handed out as a new
-attempt. Only one run can be open at a time.
+attempt that writes its own output file. Only one run can be open at a time;
+`capture abandon --reason <text>` closes a stuck run, and its uncommitted
+segments are captured again by the next run.
+
+Each segment stops before the first turn item that is still running, so a
+cursor never moves past text that may still change. A segment whose lesson
+has no Agent Observer event to anchor to stays uncommitted, with the reason in
+`run.json`.
 
 State lives in `~/.local/state/contextmd/capture/` (`queue/`, `cursors.json`,
 `runs/`). Models and paths can be overridden in

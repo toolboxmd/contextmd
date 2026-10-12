@@ -18,8 +18,8 @@ A run is driven by hand from a Chromeria thread:
 
 from __future__ import annotations
 
+import hashlib
 import json
-import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +34,10 @@ JUDGE_CONTRACT = "judge-v1"
 
 class RunError(RuntimeError):
     pass
+
+
+class AnchorMissing(RunError):
+    """A lesson's moment has no Observer event to anchor to; its segment stays open."""
 
 
 def _now() -> str:
@@ -139,6 +143,11 @@ class Capture:
                     return False
                 return it.ordinal > cur["ordinal"] if cur else it.ts >= since
             fresh = [it for it in all_items if new(it)]
+            # Stop before the first item still being written; the next run starts there.
+            busy = next((i for i, it in enumerate(fresh) if it.status in chromeria.UNFINISHED), None)
+            if busy is not None:
+                fresh = fresh[:busy]
+                entry["held_back"] = True
             old = [it for it in all_items if not new(it) and it.ts < until and
                    (it.ordinal <= cur["ordinal"] if cur else it.ts < since)]
             body_lines = transcript.render(fresh)
@@ -179,31 +188,52 @@ class Capture:
                 "threads": threads, "segments": segments, "jobs": jobs, "state": "open"}
 
     # --------------------------------------------------------------------- jobs
+    @staticmethod
+    def _live(job: dict) -> dict | None:
+        """The job's current attempt: the last one, unless it was recorded failed."""
+        last = job["attempts"][-1] if job["attempts"] else None
+        return last if last and last.get("status") != "failed" else None
+
     def _paths(self, run: dict, job: dict) -> dict:
+        """Paths of the job's current attempt (the live one, else the next one).
+
+        Each attempt writes its own file, so a superseded attempt that is
+        still running can never overwrite the output of the one that replaced it.
+        """
         sdir = self._run_dir(run["run_id"]) / "seg" / job["segment"]
-        return {"dir": sdir, "transcript": sdir / "transcript.txt",
-                "output": sdir / (f"extract-{job['extractor']}.md" if job["step"] == "extract"
-                                  else "judge.jsonl")}
+        n = len(job["attempts"]) if self._live(job) else len(job["attempts"]) + 1
+        base, ext = (f"extract-{job['extractor']}", ".md") if job["step"] == "extract" else ("judge", ".jsonl")
+        name = f"{base}{ext}" if n <= 1 else f"{base}.a{n}{ext}"
+        return {"dir": sdir, "transcript": sdir / "transcript.txt", "output": sdir / name}
+
+    def _extract_job(self, run: dict, seg_id: str, name: str) -> dict:
+        return run["jobs"][f"{seg_id}-extract-{name}"]
 
     def _extract_items(self, run: dict, seg_id: str, name: str):
-        p = self._run_dir(run["run_id"]) / "seg" / seg_id / f"extract-{name}.md"
+        p = self._paths(run, self._extract_job(run, seg_id, name))["output"]
         if not p.exists():
             return None
         return items_mod.parse_extract(p.read_text(encoding="utf-8"))
 
-    def _output_state(self, run: dict, job_id: str, job: dict) -> str:
-        """done, missing, running or invalid: whether the job's output satisfies its contract.
+    def _output_state(self, run: dict, job: dict) -> str:
+        """done, missing, running, run-failed or invalid for the job's current attempt.
 
-        ``running`` while the job's child thread is still working: its output
-        file may be half written.
+        Only a dispatched attempt's output counts, and only once its Chromeria
+        run has completed: a model may write its file in several steps.
         """
+        live = self._live(job)
         out = self._paths(run, job)["output"]
-        if not out.exists():
+        if live is None or not out.exists():
             return "missing"
-        live = next((a for a in reversed(job["attempts"]) if a.get("status") != "failed"), None)
-        if live and live.get("child_thread") and \
-                chromeria.run_finished(self.ch, live["child_thread"]) is False:
+        state = chromeria.run_state(self.ch, live["child_thread"])
+        if state in (None, "running", "queued"):
             return "running"
+        if state != "completed":
+            return "run-failed"
+        if job["step"] == "judge" and any(
+                self._output_state(run, self._extract_job(run, job["segment"], n)) != "done"
+                for n in run["targets"]["extractors"]):
+            return "missing"
         try:
             if job["step"] == "extract":
                 self._extract_items(run, job["segment"], job["extractor"])
@@ -213,6 +243,13 @@ class Capture:
             return "invalid"
         return "done"
 
+    def _extract_hashes(self, run: dict, seg_id: str) -> dict:
+        out = {}
+        for n in run["targets"]["extractors"]:
+            p = self._paths(run, self._extract_job(run, seg_id, n))["output"]
+            out[n] = hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None
+        return out
+
     def _judge_inputs(self, run: dict, seg_id: str) -> dict:
         sdir = self._run_dir(run["run_id"]) / "seg" / seg_id
         extracts = {n: self._extract_items(run, seg_id, n) for n in run["targets"]["extractors"]}
@@ -220,31 +257,27 @@ class Capture:
         texts = items_mod.judge_input(extracts, sides)
         for side, text in texts.items():
             (sdir / f"judge-{side}.jsonl").write_text(text, encoding="utf-8")
-        write_json(sdir / "judge-sides.json", sides)
+        write_json(sdir / "judge-sides.json", {**sides, "hashes": self._extract_hashes(run, seg_id)})
         return {"extracts": extracts, "sides": sides, "ids": ids}
 
     def _inputs_stale(self, run: dict, seg_id: str) -> bool:
-        """True when the judge's lists no longer match the extractors' outputs."""
-        sdir = self._run_dir(run["run_id"]) / "seg" / seg_id
-        sides = read_json(sdir / "judge-sides.json")
+        """True when the judge's lists were built from other extractor outputs than the current ones."""
+        sides = read_json(self._run_dir(run["run_id"]) / "seg" / seg_id / "judge-sides.json")
         if sides is None:
             return False
-        for side in ("A", "B"):
-            listed = (sdir / f"judge-{side}.jsonl").read_text(encoding="utf-8").count("\n")
-            if listed != len(self._extract_items(run, seg_id, sides[side])):
-                return True
-        return False
+        return sides.get("hashes") != self._extract_hashes(run, seg_id)
 
     def _judged(self, run: dict, seg_id: str):
-        sdir = self._run_dir(run["run_id"]) / "seg" / seg_id
         extracts = {n: self._extract_items(run, seg_id, n) for n in run["targets"]["extractors"]}
-        sides = read_json(sdir / "judge-sides.json")
+        if any(v is None for v in extracts.values()):
+            raise items_mod.InvalidOutput("an extractor list is missing")
         _, ids = items_mod.blind_lists(extracts, f"{run['run_id']}-{seg_id}")
         if not any(extracts.values()):
             return extracts, ids, []
         if self._inputs_stale(run, seg_id):
             raise items_mod.InvalidOutput("judge inputs are older than the extractor outputs")
-        groups = items_mod.parse_judge((sdir / "judge.jsonl").read_text(encoding="utf-8"), ids)
+        out = self._paths(run, run["jobs"][f"{seg_id}-judge"])["output"]
+        groups = items_mod.parse_judge(out.read_text(encoding="utf-8"), ids)
         return extracts, ids, groups
 
     def _task_text(self, run: dict, job_id: str, job: dict) -> str:
@@ -259,13 +292,14 @@ class Capture:
 
     def _brief(self, run: dict, job_id: str, job: dict) -> str:
         """Write the job's full prompt beside its segment; the task text points at it."""
-        path = self._paths(run, job)["dir"] / f"{job_id}.brief.md"
+        path = self._paths(run, job)["output"].with_suffix(".brief.md")
         path.write_text(self._task_text(run, job_id, job), encoding="utf-8")
         return (f"Read the brief at {path} and do exactly what it says. "
                 "Read only the files it names and write only its output file.")
 
     def next_jobs(self) -> dict:
-        """Due jobs (to dispatch now), waiting jobs (dispatched, no valid output yet)."""
+        """Jobs to dispatch now (due), dispatched jobs still working (waiting), and
+        dispatched jobs whose output or run failed (invalid: record them failed to retry)."""
         with self.store.locked():
             run = self.load()
             due, waiting, invalid = [], [], []
@@ -273,30 +307,24 @@ class Capture:
                 seg = self._segment(run, job["segment"])
                 if seg["committed"]:
                     continue
-                state = self._output_state(run, job_id, job)
+                state = self._output_state(run, job)
                 if state == "done":
                     continue
+                live = self._live(job)
                 if job["step"] == "judge":
-                    ready = all(self._output_state(run, f"{job['segment']}-extract-{n}",
-                                                   run["jobs"][f"{job['segment']}-extract-{n}"]) == "done"
-                                for n in run["targets"]["extractors"])
-                    if not ready:
+                    if any(self._output_state(run, self._extract_job(run, job["segment"], n)) != "done"
+                           for n in run["targets"]["extractors"]):
                         continue
                     extracts = {n: self._extract_items(run, job["segment"], n)
                                 for n in run["targets"]["extractors"]}
                     if not any(extracts.values()):
                         continue  # nothing to judge; commit records zero items
-                    live = job["attempts"] and job["attempts"][-1].get("status") != "failed"
-                    if not live and (not (self._paths(run, job)["dir"] / "judge-sides.json").exists()
-                                     or self._inputs_stale(run, job["segment"])):
+                    if live is None and (self._inputs_stale(run, job["segment"]) or not (
+                            self._paths(run, job)["dir"] / "judge-sides.json").exists()):
                         self._judge_inputs(run, job["segment"])
-                last = job["attempts"][-1] if job["attempts"] else None
-                if state == "running":
-                    waiting.append({"job": job_id, "task_id": last and last["task_id"], "output": state})
-                    continue
-                if last and last.get("status") != "failed":
-                    entry = {"job": job_id, "task_id": last["task_id"], "output": state}
-                    (invalid if state == "invalid" else waiting).append(entry)
+                if live is not None:
+                    entry = {"job": job_id, "task_id": live["task_id"], "output": state}
+                    (invalid if state in ("invalid", "run-failed") else waiting).append(entry)
                     continue
                 attempt = len(job["attempts"]) + 1
                 target = (run["targets"]["extractors"][job["extractor"]] if job["step"] == "extract"
@@ -320,21 +348,18 @@ class Capture:
             if job is None:
                 raise RunError(f"no job {job_id} in run {run['run_id']}")
             if failed:
-                if not job["attempts"]:
-                    raise RunError(f"job {job_id} has no attempt to mark failed")
+                if self._live(job) is None:
+                    raise RunError(f"job {job_id} has no live attempt to mark failed")
                 job["attempts"][-1]["status"] = "failed"
                 job["attempts"][-1]["note"] = note
-                out = self._paths(run, job)["output"]
-                if out.exists():
-                    out.rename(out.with_name(out.name + f".failed{len(job['attempts'])}"))
             else:
-                if not task_id:
-                    raise RunError("record needs --task-id or --failed")
-                last = job["attempts"][-1] if job["attempts"] else None
-                if last and last["task_id"] == task_id:
-                    last["child_thread"] = child_thread or last.get("child_thread")
-                elif last and last.get("status") != "failed":
-                    raise RunError(f"job {job_id} already has live task {last['task_id']}")
+                if not task_id or not child_thread:
+                    raise RunError("record needs --task-id and --child-thread, or --failed")
+                live = self._live(job)
+                if live and live["task_id"] == task_id:
+                    live["child_thread"] = child_thread
+                elif live:
+                    raise RunError(f"job {job_id} already has live task {live['task_id']}")
                 else:
                     job["attempts"].append({"task_id": task_id, "child_thread": child_thread,
                                             "recorded_at": _now(), "status": "dispatched"})
@@ -350,18 +375,24 @@ class Capture:
             for seg in run["segments"]:
                 if seg["committed"]:
                     continue
-                jobs = [run["jobs"][f"{seg['id']}-extract-{n}"] for n in run["targets"]["extractors"]]
-                if any(self._output_state(run, "", j) != "done" for j in jobs):
+                jobs = [self._extract_job(run, seg["id"], n) for n in run["targets"]["extractors"]]
+                if any(self._output_state(run, j) != "done" for j in jobs):
                     continue
                 extracts = {n: self._extract_items(run, seg["id"], n) for n in run["targets"]["extractors"]}
                 if any(extracts.values()):
-                    if self._output_state(run, "", run["jobs"][f"{seg['id']}-judge"]) != "done":
+                    if self._output_state(run, run["jobs"][f"{seg['id']}-judge"]) != "done":
                         continue
                     extracts, ids, groups = self._judged(run, seg["id"])
                     lessons = items_mod.merge(groups, ids, extracts)
                 else:
                     lessons = []
-                queue_items = self._queue_items(run, seg, lessons)
+                try:
+                    queue_items = self._queue_items(run, seg, lessons)
+                except AnchorMissing as exc:
+                    seg["error"] = str(exc)
+                    self.save(run)
+                    continue
+                seg.pop("error", None)
                 for it in queue_items:
                     if run["experiment"]:
                         write_json(self._run_dir(run["run_id"]) / "items" /
@@ -382,6 +413,17 @@ class Capture:
             self.save(run)
             return {"run_id": run["run_id"], "committed_segments": committed, "state": run["state"],
                     "open_segments": sum(1 for s in run["segments"] if not s["committed"])}
+
+    def abandon(self, reason: str) -> dict:
+        """Close the open run without its uncommitted segments; their events stay uncaptured."""
+        with self.store.locked():
+            run = self.load()
+            run["state"] = "abandoned"
+            run["abandoned"] = {"at": _now(), "reason": reason,
+                                "open_segments": [s["id"] for s in run["segments"] if not s["committed"]]}
+            self.save(run)
+            self.store.set_active_run(None)
+            return {"run_id": run["run_id"], **run["abandoned"]}
 
     def _advance_cursors(self, run: dict) -> None:
         """Move each thread's cursor past its leading run of committed segments."""
@@ -443,6 +485,8 @@ class Capture:
                                         kind=line["kind"], text=self._item_text(line["item_id"]),
                                         ts=line["ts"])
                 ref = exact or ref
+            if ref is None:
+                raise AnchorMissing(f"no Observer event for {line['item_id']} in {thread['session_key']}")
             index = per_event[line["item_id"]]
             per_event[line["item_id"]] += 1
             out.append({

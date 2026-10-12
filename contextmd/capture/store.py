@@ -70,7 +70,9 @@ class Store:
             p.unlink(missing_ok=True)
         else:
             self.root.mkdir(parents=True, exist_ok=True)
-            p.write_text(run_id + "\n")
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_text(run_id + "\n")
+            os.replace(tmp, p)
 
     def cursors(self) -> dict:
         return read_json(self.root / "cursors.json", {})

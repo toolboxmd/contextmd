@@ -35,6 +35,9 @@ def parse_extract(text: str) -> list[dict]:
                 "markdown": "## " + part.strip()}
         for key, label in FIELDS.items():
             item[key] = _field(body, label)
+        empty = [FIELDS[k] for k in FIELDS if not item[k]]
+        if empty or not item["title"]:
+            raise InvalidOutput(f"item '{item['title'][:40]}' lacks {', '.join(empty) or 'a title'}")
         items.append(item)
     if not items and text.strip() != "NO ITEMS":
         raise InvalidOutput("no '## ' item sections and not 'NO ITEMS'")

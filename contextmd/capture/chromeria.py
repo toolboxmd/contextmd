@@ -16,6 +16,8 @@ from urllib.parse import unquote
 THREADS = "orchestration_v2_projection_threads"
 ITEMS = "orchestration_v2_projection_turn_items"
 RUNS = "orchestration_v2_projection_runs"
+# Turn item statuses whose text may still change.
+UNFINISHED = ("running", "pending", "queued")
 
 
 def connect(path: str) -> sqlite3.Connection:
@@ -54,6 +56,7 @@ class Item:
     ordinal: int
     ts: str
     type: str
+    status: str = "completed"
     payload: dict = field(repr=False, default_factory=dict)
 
     @property
@@ -88,7 +91,7 @@ def _item(row) -> Item:
     p = json.loads(row["payload_json"])
     ts = p.get("startedAt") or p.get("updatedAt") or row["updated_at"] or ""
     return Item(item_id=row["turn_item_id"], thread_id=row["thread_id"],
-                ordinal=row["ordinal"], ts=ts, type=row["type"], payload=p)
+                ordinal=row["ordinal"], ts=ts, type=row["type"], status=row["status"], payload=p)
 
 
 def active_thread_ids(con: sqlite3.Connection, since: str, until: str) -> list[str]:
@@ -103,7 +106,7 @@ def active_thread_ids(con: sqlite3.Connection, since: str, until: str) -> list[s
 
 def items(con: sqlite3.Connection, thread_id: str) -> list[Item]:
     rows = con.execute(
-        f"SELECT turn_item_id, thread_id, ordinal, type, updated_at, payload_json"
+        f"SELECT turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json"
         f" FROM {ITEMS} WHERE thread_id=? ORDER BY ordinal, turn_item_id",
         (thread_id,)).fetchall()
     return [_item(r) for r in rows]
@@ -119,14 +122,9 @@ def run_window(con: sqlite3.Connection, thread_id: str) -> tuple[str | None, str
     return first.get("startedAt"), last.get("completedAt")
 
 
-def run_finished(con: sqlite3.Connection, thread_id: str) -> bool | None:
-    """Whether a thread's latest run has completed; None when it has no runs.
 
-    A model may write its output file in several steps, so a delegated job's
-    output counts only once its run is over.
-    """
+def run_state(con: sqlite3.Connection, thread_id: str) -> str | None:
+    """Status of a thread's latest run (completed, running, failed, ...); None when it has none."""
     row = con.execute(f"SELECT payload_json FROM {RUNS} WHERE thread_id=? ORDER BY ordinal DESC LIMIT 1",
                       (thread_id,)).fetchone()
-    if row is None:
-        return None
-    return bool(json.loads(row[0]).get("completedAt"))
+    return json.loads(row[0]).get("status") if row else None

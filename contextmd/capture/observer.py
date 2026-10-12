@@ -83,9 +83,10 @@ def anchor(con: sqlite3.Connection, session_key: str, *, native_id: str | None,
     before it (``prev``). None only when the session has no events.
     """
     if native_id:
+        prefix = native_id + ":"
         row = con.execute(
-            "SELECT id FROM events WHERE session_key=? AND (native_id=? OR native_id LIKE ?)"
-            " ORDER BY id LIMIT 1", (session_key, native_id, native_id + ":%")).fetchone()
+            "SELECT id FROM events WHERE session_key=? AND (native_id=? OR substr(native_id, 1, ?)=?)"
+            " ORDER BY id LIMIT 1", (session_key, native_id, len(prefix), prefix)).fetchone()
         if row:
             return {"session_key": session_key, "ref": "event", "id": row["id"], "anchor": "exact"}
     if kind in ("user", "brief") and text:
@@ -97,14 +98,16 @@ def anchor(con: sqlite3.Connection, session_key: str, *, native_id: str | None,
                     "anchor": "exact"}
     t = _epoch(ts)
     if t is not None:
-        row = con.execute("SELECT id FROM events WHERE session_key=? AND ts>=? ORDER BY ts, id LIMIT 1",
+        row = con.execute("SELECT id, ts FROM events WHERE session_key=? AND ts>=? ORDER BY ts, id LIMIT 1",
                           (session_key, t)).fetchone()
         if row:
-            return {"session_key": session_key, "ref": "event", "id": row["id"], "anchor": "next"}
-        row = con.execute("SELECT id FROM events WHERE session_key=? AND ts<? ORDER BY ts DESC, id DESC LIMIT 1",
+            return {"session_key": session_key, "ref": "event", "id": row["id"], "anchor": "next",
+                    "distance_s": round(row["ts"] - t, 1)}
+        row = con.execute("SELECT id, ts FROM events WHERE session_key=? AND ts<? ORDER BY ts DESC, id DESC LIMIT 1",
                           (session_key, t)).fetchone()
         if row:
-            return {"session_key": session_key, "ref": "event", "id": row["id"], "anchor": "prev"}
+            return {"session_key": session_key, "ref": "event", "id": row["id"], "anchor": "prev",
+                    "distance_s": round(t - row["ts"], 1)}
     return None
 
 

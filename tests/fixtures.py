@@ -12,7 +12,7 @@ def chromeria_db(path: Path, threads: list[dict], items: list[dict]) -> sqlite3.
     con.executescript("""
     CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, payload_json TEXT);
     CREATE TABLE orchestration_v2_projection_turn_items (turn_item_id TEXT PRIMARY KEY, thread_id TEXT,
-      ordinal INTEGER, type TEXT, updated_at TEXT, payload_json TEXT);
+      ordinal INTEGER, type TEXT, status TEXT, updated_at TEXT, payload_json TEXT);
     CREATE TABLE orchestration_v2_projection_runs (run_id TEXT PRIMARY KEY, thread_id TEXT,
       ordinal INTEGER, payload_json TEXT);
     """)
@@ -26,11 +26,14 @@ def chromeria_db(path: Path, threads: list[dict], items: list[dict]) -> sqlite3.
         if t.get("run"):
             start, end = t["run"]
             con.execute("INSERT INTO orchestration_v2_projection_runs VALUES(?,?,?,?)",
-                        (f"run-{t['id']}", t["id"], 1, json.dumps({"startedAt": start, "completedAt": end})))
+                        (f"run-{t['id']}", t["id"], 1, json.dumps(
+                            {"startedAt": start, "completedAt": end,
+                             "status": t.get("run_status", "completed" if end else "running")})))
     for i in items:
         payload = {"startedAt": i["ts"], "type": i["type"], **i.get("payload", {})}
-        con.execute("INSERT INTO orchestration_v2_projection_turn_items VALUES(?,?,?,?,?,?)",
-                    (i["id"], i["thread"], i["ordinal"], i["type"], i["ts"], json.dumps(payload)))
+        con.execute("INSERT INTO orchestration_v2_projection_turn_items VALUES(?,?,?,?,?,?,?)",
+                    (i["id"], i["thread"], i["ordinal"], i["type"], i.get("status", "completed"), i["ts"],
+                     json.dumps(payload)))
     con.commit()
     con.row_factory = sqlite3.Row
     return con

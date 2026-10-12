@@ -39,6 +39,8 @@ def main(argv=None) -> int:
     r.add_argument("--failed", action="store_true")
     r.add_argument("--note")
     cs.add_parser("commit", help="write judged segments to the queue and move cursors")
+    ab = cs.add_parser("abandon", help="close the open run; its uncommitted segments stay uncaptured")
+    ab.add_argument("--reason", required=True)
     rp = cs.add_parser("report", help="counts per step and thread kind, cost per model step")
     rp.add_argument("--run")
     cp = cs.add_parser("compare", help="boundary check: whole-thread run versus segmented run")
@@ -50,7 +52,10 @@ def main(argv=None) -> int:
     cfg = config.load(ns.config)
     cap_ = Capture(cfg)
     try:
-        if ns.cmd == "prepare":
+        if ns.cmd in ("report", "compare"):
+            with cap_.store.locked():
+                out = _read_side(ns, cap_)
+        elif ns.cmd == "prepare":
             since, until = _day_bounds(ns.day) if ns.day else (ns.since, ns.until)
             if not since or not until:
                 ap.error("prepare needs --day or --since and --until")
@@ -66,29 +71,35 @@ def main(argv=None) -> int:
                               failed=ns.failed, note=ns.note)
         elif ns.cmd == "commit":
             out = cap_.commit()
-        elif ns.cmd == "compare":
-            seg = cap_.load(ns.segmented_run)
-            name = hashlib.sha256(ns.thread.encode()).hexdigest()[:12]
-            out_dir = cap_.store.runs / ns.whole_run / "compare" / name
-            if ns.result:
-                cuts = [s_["last"]["ts"] for s_ in seg["segments"] if s_["thread"] == ns.thread][:-1]
-                out = compare.result(out_dir, cuts)
-                write_json(out_dir / "result.json", out)
-            else:
-                out = compare.prepare(
-                    out_dir, ns.thread,
-                    report.run_items(cap_.store.runs / ns.whole_run, cap_.store.queue, ns.whole_run),
-                    report.run_items(cap_.store.runs / ns.segmented_run, cap_.store.queue, ns.segmented_run))
-        else:
-            run = cap_.load(ns.run) if ns.run else _latest(cap_)
-            rdir = cap_.store.runs / run["run_id"]
-            out = report.build(run, report.run_items(rdir, cap_.store.queue, run["run_id"]))
-            write_json(rdir / "report.json", out)
+        elif ns.cmd == "abandon":
+            out = cap_.abandon(ns.reason)
     except (RunError, Busy, observer.SyncFailed) as exc:
         print(f"capture: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(out, indent=1, ensure_ascii=False))
     return 0
+
+
+def _read_side(ns, cap_: Capture) -> dict:
+    if ns.cmd == "compare":
+        seg = cap_.load(ns.segmented_run)
+        name = hashlib.sha256(ns.thread.encode()).hexdigest()[:12]
+        out_dir = cap_.store.runs / ns.whole_run / "compare" / name
+        if ns.result:
+            cuts = [s_["last"]["ts"] for s_ in seg["segments"] if s_["thread"] == ns.thread][:-1]
+            out = compare.result(out_dir, cuts)
+            write_json(out_dir / "result.json", out)
+        else:
+            out = compare.prepare(
+                out_dir, ns.thread,
+                report.run_items(cap_.store.runs / ns.whole_run, cap_.store.queue, ns.whole_run),
+                report.run_items(cap_.store.runs / ns.segmented_run, cap_.store.queue, ns.segmented_run))
+    else:
+        run = cap_.load(ns.run) if ns.run else _latest(cap_)
+        rdir = cap_.store.runs / run["run_id"]
+        out = report.build(run, report.run_items(rdir, cap_.store.queue, run["run_id"]))
+        write_json(rdir / "report.json", out)
+    return out
 
 
 def _latest(cap_: Capture) -> dict:

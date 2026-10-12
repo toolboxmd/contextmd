@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from contextmd.capture import compare, config, items, kinds, observer, transcript  # noqa: E402
+from contextmd.capture import compare, config, items, kinds, observer, report, transcript  # noqa: E402
 from contextmd.capture.chromeria import Item, Thread  # noqa: E402
 from contextmd.capture.run import Capture, RunError  # noqa: E402
 from contextmd.capture.store import Busy, Store  # noqa: E402
@@ -20,8 +20,9 @@ def epoch(iso):
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
 
 
-def item(tid, n, ts, type_, **payload):
-    return {"id": f"{tid}-i{n}", "thread": tid, "ordinal": n, "ts": ts, "type": type_, "payload": payload}
+def item(tid, n, ts, type_, status="completed", **payload):
+    return {"id": f"{tid}-i{n}", "thread": tid, "ordinal": n, "ts": ts, "type": type_, "status": status,
+            "payload": payload}
 
 
 def md(*entries):
@@ -81,6 +82,10 @@ class SegmentsTest(unittest.TestCase):
 
 
 class ParseTest(unittest.TestCase):
+    def test_item_missing_a_field_is_invalid(self):
+        with self.assertRaises(items.InvalidOutput):
+            items.parse_extract("## rule: half\n\n**What:** something\n")
+
     def test_extract_fields_and_no_items(self):
         got = items.parse_extract(md(("Use rsync excludes", 4, "failure")))
         self.assertEqual(got[0]["title"], "Use rsync excludes")
@@ -110,10 +115,11 @@ class RunTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
-        U, W, B = "U", f"{DT}fix-db-1", f"{DT}big-job-1"
-        self.U, self.W, self.B = U, W, B
+        U, W, B, R = "U", f"{DT}fix-db-1", f"{DT}big-job-1", f"{DT}still-going-1"
+        self.U, self.W, self.B, self.R = U, W, B, R
         threads = [{"id": "P", "created_by": "user"}, {"id": U, "created_by": "user", "title": "Main"},
-                   {"id": W, "parent": "P", "title": "Fix the db"}, {"id": B, "parent": "P", "title": "Big job"}]
+                   {"id": W, "parent": "P", "title": "Fix the db"}, {"id": B, "parent": "P", "title": "Big job"},
+                   {"id": R, "parent": "P", "title": "Still going"}]
         threads += [{"id": f"{DT}final-v3-a-{i}", "parent": "P"} for i in range(4)]
         threads += [{"id": f"{DT}contextmd-capture-old-s000-judge-1", "parent": "P"}]
         threads += [{"id": f"{DT}contextmd-capture-child-{n}", "parent": "P",
@@ -131,6 +137,9 @@ class RunTest(unittest.TestCase):
         ]
         its += [item(B, n, f"2026-10-10T11:{n:02d}:00Z", "assistant_message", text="y" * 300)
                 for n in range(1, 21)]
+        its += [item(R, 1, "2026-10-10T13:00:00Z", "assistant_message", text="first"),
+                item(R, 2, "2026-10-10T13:05:00Z", "assistant_message", status="running", text="half a sen"),
+                item(R, 3, "2026-10-10T13:10:00Z", "assistant_message", text="later")]
         its += [item(f"{DT}final-v3-a-{i}", 1, "2026-10-10T12:00:00Z", "assistant_message", text="label")
                 for i in range(4)]
         its += [item(f"{DT}contextmd-capture-old-s000-judge-1", 1, "2026-10-10T12:00:00Z",
@@ -141,9 +150,10 @@ class RunTest(unittest.TestCase):
              "events": [(11, "call-4", epoch("2026-10-10T09:02:00Z")), (12, "x", epoch("2026-10-10T09:01:30Z"))]},
             {"thread": W, "key": "codex:w", "native": "w", "events": [(21, "y", epoch("2026-10-10T10:06:00Z"))]},
             {"thread": B, "key": "codex:b", "native": "b", "events": [(31, "z", epoch("2026-10-10T11:30:00Z"))]},
+            {"thread": R, "key": "codex:r", "native": "r", "events": [(41, "q", epoch("2026-10-10T13:00:00Z"))]},
         ] + [{"thread": f"{DT}contextmd-capture-child-{n}", "key": f"codex:c{n}", "native": f"c{n}",
               "responses": [("gpt-6.1-sol-2026", 1000)]} for n in range(3)])
-        self.cfg = dict(config.DEFAULTS, machine="rocky", state_dir=str(self.tmp / "state"),
+        self.cfg = dict(config.DEFAULTS, machine="m1", state_dir=str(self.tmp / "state"),
                         segment_chars=2000, context_chars=500)
         self.syncs = []
         self.cap = self.new()
@@ -260,7 +270,10 @@ class RunTest(unittest.TestCase):
         again = [j for j in self.cap.next_jobs()["due"] if j["job"] == job["job"]]
         self.assertEqual(len(again), 1)
         self.assertTrue(again[0]["clientRequestId"].endswith("-2"))
-        self.assertFalse(Path(job["output"]).exists())
+        # Each attempt has its own output file, so the failed attempt cannot overwrite the new one.
+        self.assertNotEqual(again[0]["output"], job["output"])
+        self.assertTrue(again[0]["output"].endswith(".a2.md"))
+        self.assertTrue(Path(job["output"]).exists())
 
     def test_half_written_output_waits_for_the_run_and_stale_judge_inputs_are_redone(self):
         run = self.prepare()
@@ -287,6 +300,111 @@ class RunTest(unittest.TestCase):
         self.assertEqual(len(again), 1)
         listed = sum((sdir / f"judge-{side}.jsonl").read_text().count("\n") for side in "AB")
         self.assertEqual(listed, 3)
+
+    def test_record_requires_the_child_thread(self):
+        self.prepare()
+        job = self.cap.next_jobs()["due"][0]["job"]
+        with self.assertRaises(RunError):
+            self.cap.record(job, task_id="t1")
+
+    def test_extractor_failed_after_judge_wrote_does_not_crash_and_is_redone(self):
+        run = self.prepare()
+        seg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
+        self.dispatch_all("extract")
+        self.finish_segment(run, seg)
+        self.cap.record(f"{seg}-extract-sol", failed=True, note="redo")
+        nxt = self.cap.next_jobs()
+        self.assertIn(f"{seg}-extract-sol", [j["job"] for j in nxt["due"]])
+        self.assertNotIn(f"{seg}-judge", [j["job"] for j in nxt["due"] + nxt["invalid"]])
+        self.cap.commit()
+        self.assertFalse(next(s for s in self.cap.load()["segments"] if s["id"] == seg)["committed"])
+
+    def test_same_count_redo_makes_judge_inputs_stale(self):
+        run = self.prepare()
+        seg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
+        sdir = self.cap.store.runs / run["run_id"] / "seg" / seg
+        self.dispatch_all("extract")
+        self.finish_segment(run, seg)
+        self.cap.record(f"{seg}-extract-grok", failed=True, note="redo")
+        redo = next(j for j in self.cap.next_jobs()["due"] if j["job"] == f"{seg}-extract-grok")
+        self.cap.record(redo["job"], task_id="t-redo", child_thread=f"{DT}contextmd-capture-child-0")
+        first = min(int(n) for n in self.lines(run, seg))
+        Path(redo["output"]).write_text(md(("a different lesson", first, "failure")))  # same count
+        self.assertIn(f"{seg}-judge", [i["job"] for i in self.cap.next_jobs()["invalid"]])
+        self.cap.record(f"{seg}-judge", failed=True, note="stale")
+        self.assertIn(f"{seg}-judge", [j["job"] for j in self.cap.next_jobs()["due"]])
+        self.assertIn("a different lesson", (sdir / "judge-A.jsonl").read_text() + (sdir / "judge-B.jsonl").read_text())
+
+    def test_failed_child_run_is_reported_not_waited_on(self):
+        run = self.prepare()
+        seg = run["segments"][0]["id"]
+        self.ch.execute("INSERT INTO orchestration_v2_projection_runs VALUES(?,?,?,?)",
+                        ("run-dead", f"{DT}dead", 1, json.dumps({"status": "failed", "completedAt": "x"})))
+        self.cap.record(f"{seg}-extract-sol", task_id="t", child_thread=f"{DT}dead")
+        out = self.cap._paths(self.cap.load(), self.cap.load()["jobs"][f"{seg}-extract-sol"])["output"]
+        out.write_text("## half")
+        self.assertIn({"job": f"{seg}-extract-sol", "task_id": "t", "output": "run-failed"},
+                      self.cap.next_jobs()["invalid"])
+
+    def test_items_still_being_written_are_held_back(self):
+        run = self.prepare()
+        seg = next(s for s in run["segments"] if s["thread"] == self.R)
+        self.assertEqual(seg["last"]["ordinal"], 1)
+        self.assertTrue(run["threads"][self.R]["held_back"])
+        text = (self.cap.store.runs / run["run_id"] / "seg" / seg["id"] / "transcript.txt").read_text()
+        self.assertNotIn("half a sen", text)
+        self.assertNotIn("later", text)
+
+    def test_lesson_without_observer_anchor_keeps_its_segment_open(self):
+        self.ao.execute("DELETE FROM events WHERE session_key='codex:w'")
+        run = self.prepare()
+        wseg = next(s for s in run["segments"] if s["thread"] == self.W)["id"]
+        self.dispatch_all("extract")
+        for s in run["segments"]:
+            self.finish_segment(run, s["id"])
+        result = self.cap.commit()
+        self.assertEqual(result["state"], "open")
+        seg = next(s for s in self.cap.load()["segments"] if s["id"] == wseg)
+        self.assertFalse(seg["committed"])
+        self.assertIn("no Observer event", seg["error"])
+        self.assertNotIn(self.W, self.cap.store.cursors())
+        self.assertTrue(all(i["moment"]["observer"] for i in self.cap.store.queued()))
+        self.ao.execute("INSERT INTO events VALUES(?,?,?,?,?)", (22, "codex:w", epoch("2026-10-10T10:06:00Z"),
+                                                                   "tool_call", "y"))
+        self.assertEqual(self.cap.commit()["state"], "complete")
+
+    def test_both_extractors_empty_commits_zero_items_without_a_judge(self):
+        run = self.prepare()
+        seg = next(s for s in run["segments"] if s["thread"] == self.W)["id"]
+        self.dispatch_all("extract")
+        for name in ("sol", "grok"):
+            (self.cap.store.runs / run["run_id"] / "seg" / seg / f"extract-{name}.md").write_text("NO ITEMS")
+        self.assertNotIn(f"{seg}-judge", [j["job"] for j in self.cap.next_jobs()["due"]])
+        self.cap.commit()
+        seg_rec = next(s for s in self.cap.load()["segments"] if s["id"] == seg)
+        self.assertTrue(seg_rec["committed"])
+        self.assertEqual(seg_rec["items"], 0)
+        self.assertEqual(self.cap.store.cursors()[self.W]["ordinal"], 2)
+
+    def test_abandon_closes_the_run_without_moving_open_cursors(self):
+        run = self.prepare()
+        out = self.cap.abandon("stuck job")
+        self.assertIsNone(self.cap.store.active_run())
+        self.assertEqual(len(out["open_segments"]), len(run["segments"]))
+        self.assertEqual(self.cap.store.cursors(), {})
+        self.prepare()  # a new run can start
+
+    def test_report_counts_match_the_queue(self):
+        run = self.prepare()
+        self.dispatch_all("extract")
+        for s in run["segments"]:
+            self.finish_segment(run, s["id"])
+        self.cap.commit()
+        r = report.build(self.cap.load(run["run_id"]), self.cap.store.queued())
+        self.assertEqual(r["steps"]["lessons"], len(run["segments"]))
+        self.assertEqual(r["steps"]["keep_found_by"], {"grok+sol": len(run["segments"])})
+        self.assertEqual(r["steps"]["threads_skipped"], {"skipped:worker-batch": 4, "skipped:capture": 1})
+        self.assertEqual(r["cost"]["sol"]["observed_models"], {"gpt-6.1-sol-2026": len(run["segments"])})
 
     def test_cursor_moves_only_past_leading_committed_segments(self):
         run = self.prepare()
@@ -323,8 +441,10 @@ class RunTest(unittest.TestCase):
             self.prepare()
         store = Store(self.cfg["state_dir"])
         with store.locked():
-            with self.assertRaises(Busy):
-                self.new().next_jobs()
+            for call in (lambda c: c.next_jobs(), lambda c: c.commit(), lambda c: c.abandon("x"),
+                         lambda c: c.record("s000-judge", failed=True)):
+                with self.assertRaises(Busy):
+                    call(self.new())
 
     def test_experiment_keeps_items_in_run_and_cursors_still(self):
         run = self.cap.prepare("2026-10-10T00:00:00Z", "2026-10-11T00:00:00Z",
