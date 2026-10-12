@@ -7,7 +7,7 @@ import hashlib
 import json
 import sys
 
-from .capture import compare, config, observer, report
+from .capture import compare, config, dedupe, observer, report
 from .capture.run import Capture, RunError
 from .capture.store import Busy, write_json
 
@@ -48,11 +48,19 @@ def main(argv=None) -> int:
     cp.add_argument("--segmented-run", required=True)
     cp.add_argument("--thread", required=True)
     cp.add_argument("--result", action="store_true", help="read the compare job's output")
+    dd = cs.add_parser("dedupe", help="group a finished run's kept lessons across segments (one judge job)")
+    dd.add_argument("--run", required=True)
+    dd.add_argument("--result", action="store_true", help="apply the judge's groups to the run's items")
+    rp2 = cs.add_parser("replay", help="experiment run over exact segment transcripts of an earlier run")
+    rp2.add_argument("--from-run", required=True)
+    rp2.add_argument("--segment", action="append", required=True)
+    rp2.add_argument("--experiment", required=True)
+    rp2.add_argument("--extract-prompt", default="extract.md", help="prompt file under prompts/capture/")
     ns = ap.parse_args(argv)
     cfg = config.load(ns.config)
     cap_ = Capture(cfg)
     try:
-        if ns.cmd in ("report", "compare"):
+        if ns.cmd in ("report", "compare", "dedupe"):
             with cap_.store.locked():
                 out = _read_side(ns, cap_)
         elif ns.cmd == "prepare":
@@ -73,6 +81,10 @@ def main(argv=None) -> int:
             out = cap_.commit()
         elif ns.cmd == "abandon":
             out = cap_.abandon(ns.reason)
+        elif ns.cmd == "replay":
+            run = cap_.replay(ns.from_run, ns.segment, ns.experiment, ns.extract_prompt)
+            out = {"run_id": run["run_id"], "segments": len(run["segments"]), "jobs": len(run["jobs"]),
+                   "contracts": run["contracts"]}
     except (RunError, Busy, observer.SyncFailed) as exc:
         print(f"capture: {exc}", file=sys.stderr)
         return 1
@@ -81,6 +93,16 @@ def main(argv=None) -> int:
 
 
 def _read_side(ns, cap_: Capture) -> dict:
+    if ns.cmd == "dedupe":
+        run = cap_.load(ns.run)
+        if run["state"] != "complete":
+            raise RunError(f"run {ns.run} is {run['state']}; dedupe needs a complete run")
+        rdir = cap_.store.runs / ns.run
+        files = dedupe.item_files(rdir, cap_.store.queue, ns.run)
+        out = (dedupe.apply if ns.result else dedupe.prepare)(rdir / "dedupe", files)
+        if ns.result:
+            write_json(rdir / "dedupe" / "result.json", out)
+        return out
     if ns.cmd == "compare":
         seg = cap_.load(ns.segmented_run)
         name = hashlib.sha256(ns.thread.encode()).hexdigest()[:12]

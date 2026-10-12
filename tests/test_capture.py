@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from contextmd.capture import compare, config, items, kinds, observer, report, transcript  # noqa: E402
+from contextmd.capture import compare, config, dedupe, items, kinds, observer, report, transcript  # noqa: E402
 from contextmd.capture.chromeria import Item, Thread  # noqa: E402
 from contextmd.capture.run import Capture, RunError  # noqa: E402
 from contextmd.capture.store import Busy, Store  # noqa: E402
@@ -538,6 +538,56 @@ class RunTest(unittest.TestCase):
         kept = [i for i in self.cap.store.queued() if i["run"]["segment"] == first["id"]]
         self.assertEqual([i["title"] for i in kept], ["both"])
         self.assertEqual(kept[0]["key"]["event"], lines1[str(o)]["item_id"])
+
+    def test_replay_uses_the_same_transcripts_with_another_prompt_and_leaves_the_queue(self):
+        run = self.prepare()
+        self.dispatch_all("extract")
+        for s_ in run["segments"]:
+            self.finish_segment(run, s_["id"])
+        self.cap.commit()
+        before = len(self.cap.store.queued())
+        seg = run["segments"][0]["id"]
+        rep = self.cap.replay(run["run_id"], [seg], "nolist", "extract-nolist.md")
+        self.assertEqual(rep["contracts"]["extract"], "extract-v1-nolist")
+        src = (self.cap.store.runs / run["run_id"] / "seg" / seg / "transcript.txt").read_text()
+        self.assertEqual((self.cap.store.runs / rep["run_id"] / "seg" / seg / "transcript.txt").read_text(), src)
+        job = next(j for j in self.cap.next_jobs()["due"] if j["job"] == f"{seg}-extract-sol")
+        brief = Path(job["task"].split("brief at ", 1)[1].split(" and do", 1)[0]).read_text()
+        self.assertIn("contract: extract-v1-nolist", brief)
+        self.assertNotIn("Do not keep", brief)
+        self.dispatch_all("extract")
+        self.finish_segment(rep, seg)
+        self.assertEqual(self.cap.commit()["state"], "complete")
+        self.assertEqual(len(self.cap.store.queued()), before)
+        self.assertEqual(len(list((self.cap.store.runs / rep["run_id"] / "items").glob("*.json"))), 1)
+
+    def test_dedupe_merges_found_by_across_segments(self):
+        run = self.prepare()
+        big = [s_["id"] for s_ in run["segments"] if s_["thread"] == self.B][:2]
+        self.dispatch_all("extract")
+        for s_ in run["segments"]:
+            self.finish_segment(run, s_["id"])
+        self.cap.commit()
+        files = dedupe.item_files(self.cap.store.runs / run["run_id"], self.cap.store.queue, run["run_id"])
+        # Make the two B lessons single-extractor: one Sol-only, one Grok-only.
+        for (p, it), who in zip([f for f in files if f[1]["run"]["segment"] in big], (["sol"], ["grok"])):
+            it["found_by"] = who
+            p.write_text(json.dumps(it))
+        files = dedupe.item_files(self.cap.store.runs / run["run_id"], self.cap.store.queue, run["run_id"])
+        d = self.cap.store.runs / run["run_id"] / "dedupe"
+        dedupe.prepare(d, files)
+        ids = json.loads((d / "ids.json").read_text())
+        pair = [i for i, name in ids.items()
+                if any(p.name == name and it["run"]["segment"] in big for p, it in files)]
+        (d / "groups.jsonl").write_text(json.dumps({"ids": pair, "lesson": "same"}) + "\n")
+        out = dedupe.apply(d, files)
+        self.assertEqual(out["distinct_lessons"], out["keep_lessons"] - 1)
+        r = report.build(self.cap.load(run["run_id"]), self.cap.store.queued())
+        self.assertEqual(r["steps"]["keep_found_by"].get("sol"), 1)
+        self.assertEqual(r["steps"]["keep_found_by_distinct"].get("grok+sol"), out["distinct_lessons"])
+        (d / "groups.jsonl").write_text(json.dumps({"ids": [pair[0], pair[0]]}) + "\n")
+        with self.assertRaises(ValueError):
+            dedupe.apply(d, files)
 
     def test_cursor_moves_only_past_leading_committed_segments(self):
         run = self.prepare()

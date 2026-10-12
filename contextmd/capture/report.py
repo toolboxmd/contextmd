@@ -45,6 +45,10 @@ def build(run: dict, items: list[dict]) -> dict:
         "grades": dict(Counter(it["grade"] for it in items)),
         "unsupported": sum(1 for it in items if it["unsupported"]),
         "keep_found_by": dict(Counter("+".join(it["found_by"]) for it in items if it["grade"] == "keep")),
+        # After dedupe: one count per distinct lesson, with found_by over all its copies.
+        "keep_found_by_distinct": (dict(Counter("+".join(g["found_by"]) for g in {
+            it["dedupe"]["group"]: it["dedupe"] for it in items if it.get("dedupe")}.values()))
+            if any(it.get("dedupe") for it in items) else None),
         "learned_from_keep": dict(Counter(it["learned_from"] for it in items if it["grade"] == "keep")),
         "anchors": dict(Counter((it["moment"]["observer"] or {}).get("anchor", "none") for it in items)),
         "cited": dict(Counter(it["moment"]["cited"] for it in items)),

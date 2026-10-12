@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,8 +29,12 @@ from . import chromeria, items as items_mod, kinds as kinds_mod, observer, trans
 from .store import Store, read_json, write_json
 
 PROMPTS = Path(__file__).resolve().parents[2] / "prompts" / "capture"
-EXTRACT_CONTRACT = "extract-v1"
-JUDGE_CONTRACT = "judge-v1"
+
+
+def _contract(name: str) -> str:
+    """A prompt's contract id from its first line, ``<!-- contract: x -->``."""
+    first = (PROMPTS / name).read_text().split("\n", 1)[0]
+    return first.split("contract:", 1)[1].split("-->")[0].strip() if "contract:" in first else name
 
 
 class RunError(RuntimeError):
@@ -95,6 +100,14 @@ class Capture:
         write_json(self._run_dir(run["run_id"]) / "run.json", run)
 
     # ------------------------------------------------------------------ prepare
+    def _new_run_id(self, experiment: str | None) -> str:
+        stem = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + (f"-{experiment}" if experiment else "")
+        run_id, n = stem, 1
+        while self._run_dir(run_id).exists():  # two runs in one second must not share a directory
+            n += 1
+            run_id = f"{stem}-{n}"
+        return run_id
+
     def prepare(self, since: str, until: str, *, thread_ids=None, whole=False,
                 experiment: str | None = None) -> dict:
         with self.store.locked():
@@ -102,15 +115,64 @@ class Capture:
             if active:
                 raise RunError(f"run {active} is still open; finish it with next/record/commit")
             self._sync()
-            stem = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + (f"-{experiment}" if experiment else "")
-            run_id, n = stem, 1
-            while self._run_dir(run_id).exists():  # two runs in one second must not share a directory
-                n += 1
-                run_id = f"{stem}-{n}"
+            run_id = self._new_run_id(experiment)
             run = self._plan(run_id, since, until, thread_ids, whole, experiment)
+            self._set_prompts(run, "extract.md")
             self.save(run)
             self.store.set_active_run(run_id)
             return run
+
+    def replay(self, from_run: str, segment_ids: list[str], experiment: str,
+               extract_prompt: str = "extract.md") -> dict:
+        """An experiment run over exact segment transcripts of an earlier run.
+
+        Prompt comparisons need the same input, so the transcripts and line maps
+        are copied, not re-rendered. Cursors and the queue are not touched.
+        """
+        with self.store.locked():
+            active = self.store.active_run()
+            if active:
+                raise RunError(f"run {active} is still open; finish it with next/record/commit")
+            self._sync()
+            src = self.load(from_run)
+            run_id = self._new_run_id(experiment)
+            segments, threads = [], {}
+            for sid in segment_ids:
+                seg = next((s for s in src["segments"] if s["id"] == sid), None)
+                if seg is None:
+                    raise RunError(f"run {from_run} has no segment {sid}")
+                to = self._run_dir(run_id) / "seg" / sid
+                to.mkdir(parents=True, exist_ok=True)
+                for name in ("transcript.txt", "lines.json"):
+                    shutil.copyfile(self._run_dir(from_run) / "seg" / sid / name, to / name)
+                segments.append({**{k: seg[k] for k in ("id", "thread", "chars", "last")},
+                                 "committed": False, "source": {"run": from_run, "segment": sid}})
+                threads.setdefault(seg["thread"], {**src["threads"][seg["thread"]], "segments": []})
+                threads[seg["thread"]]["segments"].append(sid)
+            run = {"run_id": run_id, "machine": self.cfg["machine"], "since": src["since"],
+                   "until": src["until"], "whole": False, "experiment": experiment, "created_at": _now(),
+                   "replay_of": from_run, "targets": {"extractors": self.cfg["extractors"],
+                                                      "judge": self.cfg["judge"]},
+                   "threads": threads, "segments": segments, "jobs": self._jobs(segments), "state": "open"}
+            self._set_prompts(run, extract_prompt)
+            self.save(run)
+            self.store.set_active_run(run_id)
+            return run
+
+    def _set_prompts(self, run: dict, extract_prompt: str) -> None:
+        if not (PROMPTS / extract_prompt).is_file():
+            raise RunError(f"no prompt {extract_prompt} in {PROMPTS}")
+        run["prompts"] = {"extract": extract_prompt, "judge": "judge.md"}
+        run["contracts"] = {"extract": _contract(extract_prompt), "judge": _contract("judge.md")}
+
+    def _jobs(self, segments: list[dict]) -> dict:
+        jobs = {}
+        for seg in segments:
+            for name in self.cfg["extractors"]:
+                jobs[f"{seg['id']}-extract-{name}"] = {"step": "extract", "segment": seg["id"],
+                                                        "extractor": name, "attempts": []}
+            jobs[f"{seg['id']}-judge"] = {"step": "judge", "segment": seg["id"], "attempts": []}
+        return jobs
 
     def _plan(self, run_id, since, until, thread_ids, whole, experiment) -> dict:
         cfg = self.cfg
@@ -189,17 +251,10 @@ class Capture:
                                  "committed": False})
                 entry["segments"].append(seg_id)
                 context = context + seg_lines
-        jobs = {}
-        for seg in segments:
-            for name in cfg["extractors"]:
-                jobs[f"{seg['id']}-extract-{name}"] = {"step": "extract", "segment": seg["id"],
-                                                        "extractor": name, "attempts": []}
-            jobs[f"{seg['id']}-judge"] = {"step": "judge", "segment": seg["id"], "attempts": []}
         return {"run_id": run_id, "machine": cfg["machine"], "since": since, "until": until,
-                "whole": whole, "experiment": experiment, "created_at": _now(),
-                "contracts": {"extract": EXTRACT_CONTRACT, "judge": JUDGE_CONTRACT},
+                "whole": whole, "experiment": experiment, "created_at": _now(), "jobs": self._jobs(segments),
                 "targets": {"extractors": cfg["extractors"], "judge": cfg["judge"]},
-                "threads": threads, "segments": segments, "jobs": jobs, "state": "open"}
+                "threads": threads, "segments": segments, "state": "open"}
 
     # --------------------------------------------------------------------- jobs
     @staticmethod
@@ -297,7 +352,8 @@ class Capture:
     def _task_text(self, run: dict, job_id: str, job: dict) -> str:
         p = self._paths(run, job)
         if job["step"] == "extract":
-            return _fill((PROMPTS / "extract.md").read_text(), transcript=p["transcript"],
+            name = run.get("prompts", {}).get("extract", "extract.md")
+            return _fill((PROMPTS / name).read_text(), transcript=p["transcript"],
                          output=p["output"])
         sdir = p["dir"]
         return _fill((PROMPTS / "judge.md").read_text(), transcript=p["transcript"],
