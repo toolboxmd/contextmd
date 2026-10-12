@@ -309,6 +309,20 @@ class InstallTest(unittest.TestCase):
                          ["/usr/local/bin/foreign-1", str(self.base), "/usr/local/bin/foreign-2"])
         self.assertNotIn("/old/checkout", json.dumps(pre))
 
+    def test_duplicates_are_replaced_in_place_so_no_foreign_hook_moves(self):
+        codex = self.home / ".codex"
+        codex.mkdir(parents=True)
+        old = {"type": "command", "command": f"/bin/sh /old/bin/contextmd-hook codex {self.base}"}
+        foreign = {"type": "command", "command": "/usr/local/bin/foreign"}
+        (codex / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [
+            {"hooks": [old]}, {"hooks": [old, foreign]}, {"hooks": [foreign]}]}}))
+        self.run_cli("install", "codex", "--base", str(self.base))
+        pre = json.loads((codex / "hooks.json").read_text())["hooks"]["PreToolUse"]
+        self.assertEqual(pre[1]["hooks"][1], foreign)  # same group, same index
+        self.assertEqual(pre[2]["hooks"][0], foreign)
+        self.assertEqual(len(pre), 3)
+        self.assertNotIn("/old/bin", json.dumps(pre))
+
     def test_a_failed_rollback_names_the_session_to_revoke(self):
         self.run_cli("install", "grok", "--base", str(self.base))
         cred = self.base / "userdata" / "contextmd" / "hook-credential"
@@ -319,6 +333,7 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("s2", done.stdout)
         self.assertIn("revoke it by hand", done.stdout)
+        self.assertIn(f"auth session revoke --base-dir {self.base} s2", done.stdout)
         self.assertNotIn("tok", done.stdout)
         self.assertEqual(json.loads(cred.read_text())["token"], "tok1")
 

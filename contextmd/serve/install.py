@@ -140,9 +140,10 @@ def issue_credential(base: Path, t3: str, renew: bool = False) -> Path:
         except OSError as exc:
             cleanup = _t3(t3, "revoke", "--base-dir", str(base), issued["sessionId"])
             if cleanup.returncode != 0:
+                command = shlex.join([t3, "auth", "session", "revoke", "--base-dir", str(base), issued["sessionId"]])
                 raise InstallError(f"could not save the new hook credential ({exc}), and revoking the new session "
-                                   f"{issued['sessionId']} failed; revoke it by hand with `t3 auth session revoke "
-                                   f"--base-dir {base} {issued['sessionId']}`. The current credential stays in use")
+                                   f"{issued['sessionId']} failed; revoke it by hand with `{command}`. "
+                                   f"The current credential stays in use")
             raise InstallError(f"could not save the new hook credential ({exc}); the current one stays in use")
         current = replacement
     failed = [sid for sid in pending
@@ -155,35 +156,38 @@ def issue_credential(base: Path, t3: str, renew: bool = False) -> Path:
     return p["credential"]
 
 
-def _merge_hooks(path: Path, block: dict) -> None:
-    """Put ContextMD's hook into a hooks file in place, keeping every other hook where it is.
+def _foreign_positions(hooks: dict) -> dict:
+    """Every hook this installer did not write, by its ``(event, group, index)`` position."""
+    return {(event, gi, hi): json.dumps(h, sort_keys=True)
+            for event, groups in hooks.items() for gi, g in enumerate(groups)
+            for hi, h in enumerate(g.get("hooks", [])) if not _ours(h.get("command", ""))}
 
-    Codex keys a hook's trust by its position (``event:group:hook``), so moving another hook
-    would invalidate the user's trust in it. ContextMD's existing entry is replaced where it
-    stands; a new one is appended after everything else; extra copies are removed.
+
+def _merge_hooks(path: Path, block: dict) -> None:
+    """Put ContextMD's hook into a hooks file without moving any other hook.
+
+    Codex keys a hook's trust by its position (``event:group:hook``), so moving another
+    hook would invalidate the user's trust in it. Every ContextMD entry is replaced where it
+    stands (an earlier duplicate stays a duplicate rather than shifting later hooks), a
+    missing one is appended after everything else, and nothing is removed. The result is
+    checked: if any other hook moved or changed, the file is left as it was.
     """
     data = json.loads(path.read_text()) if path.exists() else {}
     hooks = data.setdefault("hooks", {})
-    for event in sorted(set(hooks) | set(block["hooks"])):
-        ours = block["hooks"].get(event, [{}])[0].get("hooks", [None])[0]
+    before = _foreign_positions(hooks)
+    for event, new_groups in block["hooks"].items():
+        ours = new_groups[0]["hooks"][0]
         placed = False
-        groups = []
         for g in hooks.get(event, []):
-            entries = []
-            for h in g.get("hooks", []):
-                if not _ours(h.get("command", "")):
-                    entries.append(h)
-                elif ours is not None and not placed:
-                    entries.append(ours)
+            entries = g.get("hooks", [])
+            for i, h in enumerate(entries):
+                if _ours(h.get("command", "")):
+                    entries[i] = ours
                     placed = True
-            if entries or not g.get("hooks"):
-                groups.append({**g, "hooks": entries} if "hooks" in g else g)
-        if ours is not None and not placed:
-            groups.extend(block["hooks"][event])
-        if groups:
-            hooks[event] = groups
-        else:
-            hooks.pop(event, None)
+        if not placed:
+            hooks.setdefault(event, []).extend(new_groups)
+    if _foreign_positions(hooks) != before:
+        raise InstallError(f"installing would move other hooks in {path}; left unchanged")
     _write(path, json.dumps(data, indent=2) + "\n")
 
 
