@@ -130,11 +130,35 @@ def context_before(lines: list[Line], max_chars: int) -> list[Line]:
     return list(reversed(out))
 
 
-def document(header: str, context: list[Line], body: list[Line]) -> tuple[str, dict[int, Line]]:
-    """The transcript file text and line number -> Line for the body lines.
+def head(lines: list[Line], max_chars: int) -> list[Line]:
+    """The first whole turn items whose lines fit ``max_chars``."""
+    out: list[Line] = []
+    total = 0
+    i = 0
+    while i < len(lines):
+        j = i
+        while j < len(lines) and lines[j].item_id == lines[i].item_id:
+            j += 1
+        group = lines[i:j]
+        if total + size(group) > max_chars:
+            break
+        out.extend(group)
+        total += size(group)
+        i = j
+    return out
 
-    Context lines are numbered too, but they are outside this capture and are not
-    in the returned map, so an item citing one is anchored to the segment start.
+
+def document(header: str, context: list[Line], body: list[Line],
+             lookahead: list[Line] = ()) -> tuple[str, dict[int, Line], set[int]]:
+    """The transcript file text, line number -> Line for extractable lines, and
+    the numbers of lookahead lines.
+
+    Segments overlap: ``lookahead`` is the start of the next segment, shown as
+    ordinary events so a lesson that runs across the cut is seen whole. The
+    next segment owns those lines, so a lesson citing one is left to it.
+    Context lines are numbered too, but they are outside this capture and are
+    not in the returned map, so an item citing one is anchored to the segment
+    start.
     """
     parts = [header]
     n = 0
@@ -144,9 +168,10 @@ def document(header: str, context: list[Line], body: list[Line]) -> tuple[str, d
             n += 1
             parts.append(line.render(n))
         parts.append("## EVENTS (extract from these lines only)")
-    numbered = {}
-    for line in body:
+    numbered, ahead = {}, set()
+    for line in list(body) + list(lookahead):
         n += 1
         numbered[n] = line
         parts.append(line.render(n))
-    return "\n".join(parts) + "\n", numbered
+    ahead = set(range(n - len(lookahead) + 1, n + 1)) if lookahead else set()
+    return "\n".join(parts) + "\n", numbered, ahead

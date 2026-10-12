@@ -128,6 +128,9 @@ def merge(groups: list[dict], ids: dict, extracts: dict[str, list[dict]]) -> lis
         lessons.append({
             "item": best, "best_from": name, "found_by": found_by,
             "members": [{"extractor": ids[m][0], "index": ids[m][1]} for m in members],
+            # The best item's citation first, then the other members'.
+            "events": [best.get("event")] + [extracts[ids[m][0]][ids[m][1]].get("event")
+                                             for m in members if m != g["best"]],
             "grade": g["grade"], "unsupported": bool(g.get("unsupported")),
             "learned_from": learned(g.get("learned_from")),
             "reason": g.get("reason"),

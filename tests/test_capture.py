@@ -75,9 +75,10 @@ class SegmentsTest(unittest.TestCase):
     def test_context_lines_are_numbered_but_not_extractable(self):
         ctx = self.lines(2, 10)
         body = self.lines(3, 10)
-        text, numbered = transcript.document("# h", ctx, body)
+        text, numbered, ahead = transcript.document("# h", ctx, body)
         self.assertIn("## CONTEXT", text)
         self.assertEqual(sorted(numbered), [3, 4, 5])
+        self.assertEqual(ahead, set())
         self.assertIn("[3] user", text)
 
 
@@ -166,7 +167,7 @@ class RunTest(unittest.TestCase):
         ] + [{"thread": f"{DT}contextmd-capture-child-{n}", "key": f"codex:c{n}", "native": f"c{n}",
               "responses": [("gpt-6.1-sol-2026", 1000)]} for n in range(3)])
         self.cfg = dict(config.DEFAULTS, machine="m1", state_dir=str(self.tmp / "state"),
-                        segment_chars=2000, context_chars=500)
+                        segment_chars=2000, context_chars=500, overlap_chars=700)
         self.syncs = []
         self.cap = self.new()
 
@@ -499,6 +500,44 @@ class RunTest(unittest.TestCase):
         self.assertEqual(r["steps"]["threads_skipped"], {"skipped:worker-batch": 4, "skipped:capture": 1})
         self.assertEqual(r["steps"]["threads_held_back"], 1)
         self.assertEqual(r["cost"]["sol"]["observed_models"], {"gpt-6.1-sol-2026": len(run["segments"])})
+
+    def test_segments_overlap_and_the_owner_keeps_each_lesson(self):
+        run = self.prepare()
+        big = [s for s in run["segments"] if s["thread"] == self.B]
+        first, second = big[0], big[1]
+        lines1 = self.lines(run, first["id"])
+        ahead = [n for n, l in lines1.items() if not l["owned"]]
+        owned = [n for n, l in lines1.items() if l["owned"]]
+        self.assertTrue(ahead)
+        # The overlap is the start of the next segment: the same turn items.
+        nxt = [l["item_id"] for n, l in sorted(self.lines(run, second["id"]).items(), key=lambda x: int(x[0]))]
+        self.assertEqual([lines1[n]["item_id"] for n in sorted(ahead, key=int)], nxt[:len(ahead)])
+        self.assertTrue(all(l["owned"] for l in self.lines(run, big[-1]["id"]).values()))
+        self.assertEqual(first["last"]["ordinal"], max(lines1[n]["ordinal"] for n in owned))
+        # One lesson cited only in the overlap, one cited in the overlap by its best item
+        # but in an owned line by the other extractor.
+        sdir = self.cap.store.runs / run["run_id"] / "seg" / first["id"]
+        self.dispatch_all("extract")
+        a, o = int(ahead[0]), int(owned[0])
+        (sdir / "extract-sol.md").write_text(md(("crosses the cut", a, "failure"), ("both", a, "user")))
+        (sdir / "extract-grok.md").write_text(md(("both", o, "user")))
+        sides = None
+        for j in self.cap.next_jobs()["due"]:
+            if j["job"] == f"{first['id']}-judge":
+                self.cap.record(j["job"], task_id="tj", child_thread=f"{DT}contextmd-capture-child-1")
+        sides = json.loads((sdir / "judge-sides.json").read_text())
+        sol, grok = ("A", "B") if sides["A"] == "sol" else ("B", "A")
+        g = lambda **kw: json.dumps({"grade": "keep", "learned_from": "user", **kw}) + "\n"
+        (sdir / "judge.jsonl").write_text(
+            g(**{sol.lower(): [f"{sol}01"]}, best=f"{sol}01") +
+            g(**{sol.lower(): [f"{sol}02"], grok.lower(): [f"{grok}01"]}, best=f"{sol}02"))
+        self.cap.commit()
+        seg = next(s for s in self.cap.load()["segments"] if s["id"] == first["id"])
+        self.assertTrue(seg["committed"])
+        self.assertEqual(seg["handed_off"], 1)
+        kept = [i for i in self.cap.store.queued() if i["run"]["segment"] == first["id"]]
+        self.assertEqual([i["title"] for i in kept], ["both"])
+        self.assertEqual(kept[0]["key"]["event"], lines1[str(o)]["item_id"])
 
     def test_cursor_moves_only_past_leading_committed_segments(self):
         run = self.prepare()

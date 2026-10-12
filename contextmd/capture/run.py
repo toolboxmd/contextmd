@@ -169,18 +169,20 @@ class Capture:
             context = transcript.render(old)
             entry["status"] = "captured"
             entry["events"] = len(fresh)
-            for seg_lines in transcript.segments(body_lines, max_chars):
+            cuts = transcript.segments(body_lines, max_chars)
+            for i, seg_lines in enumerate(cuts):
                 seg_id = f"s{len(segments):03d}"
                 ctx = transcript.context_before(context, cfg["context_chars"])
+                ahead = transcript.head(cuts[i + 1], cfg["overlap_chars"]) if i + 1 < len(cuts) else []
                 header = (f"# session {tid} | agent {entry['provider']}/{entry['model']} | kind {kind}"
                           f" | machine {cfg['machine']} | title {entry['title']} | segment {seg_id}")
-                text, numbered = transcript.document(header, ctx, seg_lines)
+                text, numbered, lookahead = transcript.document(header, ctx, seg_lines, ahead)
                 sdir = rdir / "seg" / seg_id
                 sdir.mkdir(parents=True, exist_ok=True)
                 (sdir / "transcript.txt").write_text(text, encoding="utf-8")
                 write_json(sdir / "lines.json", {str(n): {
                     "item_id": l.item_id, "ordinal": l.ordinal, "ts": l.ts, "kind": l.kind,
-                    "text": l.text} for n, l in numbered.items()})
+                    "text": l.text, "owned": n not in lookahead} for n, l in numbered.items()})
                 last = seg_lines[-1]
                 segments.append({"id": seg_id, "thread": tid, "chars": transcript.size(seg_lines),
                                  "last": {"ordinal": last.ordinal, "item_id": last.item_id, "ts": last.ts},
@@ -495,16 +497,19 @@ class Capture:
             models["judge"] = self._model_evidence(run, run["jobs"][f"{seg['id']}-judge"])
         per_event = Counter()
         out = []
+        seg["handed_off"] = 0
         first_line = lines[min(lines, key=int)] if lines else None
         for lesson in lessons:
             item = lesson["item"]
             cited, line = "item", None
-            candidates = [item.get("event")] + [None]
-            for c in candidates:
-                n = items_mod.event_number(c)
-                if n is not None and str(n) in lines:
-                    line = lines[str(n)]
-                    break
+            # The best item's citation first, then the other members'. Lines the next
+            # segment owns (the overlap) leave the lesson to that segment.
+            cited_lines = [lines[str(n)] for n in map(items_mod.event_number, lesson["events"])
+                           if n is not None and str(n) in lines]
+            line = next((l for l in cited_lines if l.get("owned", True)), None)
+            if line is None and cited_lines:
+                seg["handed_off"] += 1
+                continue
             if line is None:
                 cited, line = "segment-start", first_line
             ref = observer.anchor(self.ao, thread["session_key"], native_id=None,
