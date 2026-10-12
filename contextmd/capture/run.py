@@ -140,13 +140,15 @@ class Capture:
             entry["provider"], entry["model"] = (t.provider, t.model) if t else (None, None)
             all_items = chromeria.items(self.ch, tid)
             cur = cursors.get(tid)
-            def new(it):
-                if it.ts >= until:
-                    return False
+            def after_start(it):
                 return it.ordinal > cur["ordinal"] if cur else it.ts >= since
-            fresh = [it for it in all_items if new(it)]
-            old = [it for it in all_items if not new(it) and it.ts < until and
-                   (it.ordinal <= cur["ordinal"] if cur else it.ts < since)]
+            fresh = [it for it in all_items if after_start(it)]
+            # Stop at the first item past the window, so an earlier-timed item after it
+            # cannot move the cursor over it (timestamps do not always rise with ordinals).
+            late = next((i for i, it in enumerate(fresh) if it.ts >= until), None)
+            if late is not None:
+                fresh = fresh[:late]
+            old = [it for it in all_items if not after_start(it) and it.ts < until]
             if fresh and not cur and not experiment:
                 # Record where capture starts, so a first capture that never commits
                 # is retried from here instead of from the next window's start.

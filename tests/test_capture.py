@@ -380,9 +380,24 @@ class RunTest(unittest.TestCase):
             json.dumps({"a": ["A01"], "b": ["B01"], "grade": "keep", "learned_from": "user"}) + "\n" +
             json.dumps({"a": ["A02"], "b": ["B02"], "grade": "keep", "learned_from": "user"}) + "\n")
         self.cap.commit()
-        self.cap.commit()  # a repeated commit of the same run rewrites, never duplicates
+        # A crash after the items were written but before run.json was saved: commit again.
+        run2 = self.cap.load(run2["run_id"])
+        next(s for s in run2["segments"] if s["id"] == seg2)["committed"] = False
+        self.cap.save(run2)
+        self.cap.commit()
         mine = [i for i in self.cap.store.queued() if i["key"]["thread"] == self.U]
         self.assertEqual(sorted(i["title"] for i in mine), sorted(["lesson " + useg, "new A", "new B"]))
+
+    def test_item_past_the_window_stops_the_segment_even_if_later_items_are_earlier(self):
+        self.ch.execute("INSERT INTO orchestration_v2_projection_turn_items VALUES(?,?,?,?,?,?,?)",
+                        (f"{self.W}-i3", self.W, 3, "assistant_message", "completed", "2026-10-11T00:00:05Z",
+                         json.dumps({"startedAt": "2026-10-11T00:00:05Z", "text": "after midnight"})))
+        self.ch.execute("INSERT INTO orchestration_v2_projection_turn_items VALUES(?,?,?,?,?,?,?)",
+                        (f"{self.W}-i4", self.W, 4, "assistant_message", "completed", "2026-10-10T23:59:00Z",
+                         json.dumps({"startedAt": "2026-10-10T23:59:00Z", "text": "clock went back"})))
+        run = self.prepare()
+        seg = next(s for s in run["segments"] if s["thread"] == self.W)
+        self.assertEqual(seg["last"]["ordinal"], 2)
 
     def test_leftover_running_item_in_a_finished_thread_does_not_block_it(self):
         run = self.prepare()
