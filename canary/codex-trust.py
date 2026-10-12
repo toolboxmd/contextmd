@@ -5,7 +5,8 @@
 
 Asks `codex app-server` (hooks/list) for each hook's key and current hash and
 appends `[hooks.state."<key>"] trusted_hash` to <codex-home>/config.toml.
-Only hooks whose source file is <codex-home>/hooks.json are trusted.
+Only hooks whose source file is <codex-home>/hooks.json are trusted. Keys
+already present in config.toml are left alone, so a rerun is safe.
 """
 import json
 import os
@@ -17,6 +18,11 @@ proc = subprocess.Popen(["codex", "app-server"], stdin=subprocess.PIPE, stdout=s
                         env={**os.environ, "CODEX_HOME": home}, text=True)
 
 
+def fail(message):
+    proc.terminate()
+    sys.exit(message)
+
+
 def call(msg):
     proc.stdin.write(json.dumps(msg) + "\n")
     proc.stdin.flush()
@@ -26,9 +32,9 @@ def call(msg):
         reply = json.loads(line)
         if reply.get("id") == msg["id"]:
             if "error" in reply:
-                sys.exit(f"{msg['method']}: {reply['error']}")
-            return reply["result"]
-    sys.exit("app-server closed")
+                fail(f"{msg['method']}: {reply['error']}")
+            return reply.get("result") or {}
+    fail("app-server closed")
 
 
 call({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "contextmd-canary", "version": "0"}}})
@@ -36,14 +42,20 @@ call({"method": "initialized"})
 result = call({"id": 2, "method": "hooks/list", "params": {"cwds": [ws]}})
 proc.terminate()
 
-hooks_file = os.path.join(home, "hooks.json")
-lines = []
-for entry in result["data"]:
+config = os.path.join(home, "config.toml")
+existing = open(config).read() if os.path.exists(config) else ""
+hooks_file = os.path.realpath(os.path.join(home, "hooks.json"))
+lines, found = [], 0
+for entry in result.get("data", []):
     for hook in entry.get("hooks", []):
-        if os.path.realpath(hook["sourcePath"]) == os.path.realpath(hooks_file):
-            lines.append(f'\n[hooks.state."{hook["key"]}"]\ntrusted_hash = "{hook["currentHash"]}"\n')
-if not lines:
+        if os.path.realpath(hook["sourcePath"]) != hooks_file:
+            continue
+        found += 1
+        table = f'[hooks.state."{hook["key"]}"]'
+        if table not in existing:
+            lines.append(f'\n{table}\ntrusted_hash = "{hook["currentHash"]}"\n')
+if not found:
     sys.exit(f"no hooks from {hooks_file} in hooks/list: {json.dumps(result)[:500]}")
-with open(os.path.join(home, "config.toml"), "a") as fh:
+with open(config, "a") as fh:
     fh.writelines(lines)
-print(f"trusted {len(lines)} hooks")
+print(f"trusted {len(lines)} new hooks ({found - len(lines)} already trusted)")

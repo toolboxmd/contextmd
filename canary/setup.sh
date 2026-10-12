@@ -8,13 +8,16 @@ host=$1 ws=$(cd "$2" && pwd) here=$(cd "$(dirname "$0")" && pwd)
 log="$ws/.canary/log.jsonl"
 mkdir -p "$ws/.canary"
 
+# hooks_json "<events>" [extra hook flag]: paths are shell-quoted in the
+# command and JSON-escaped by Python, so spaces and quotes are safe.
 hooks_json() {
-  local cmd="python3 $here/canary-hook.py --host $host --log $log${2:+ $2}" events=$1 out="" sep=""
-  for e in $events; do
-    out+="$sep\"$e\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$cmd\",\"timeout\":5}]}]"
-    sep=","
-  done
-  printf '{"hooks":{%s}}\n' "$out"
+  python3 - "$here/canary-hook.py" "$host" "$log" "$1" "${2:-}" <<'EOF'
+import json, shlex, sys
+hook, host, log, events, extra = sys.argv[1:]
+cmd = " ".join(["python3", shlex.quote(hook), "--host", host, "--log", shlex.quote(log)] + ([extra] if extra else []))
+group = [{"hooks": [{"type": "command", "command": cmd, "timeout": 5}]}]
+print(json.dumps({"hooks": {event: group for event in events.split()}}))
+EOF
 }
 
 case $host in
@@ -32,7 +35,12 @@ case $host in
     hooks_json "UserPromptSubmit PreToolUse PostToolUse Stop" >"$home/hooks.json" ;;
   opencode)
     mkdir -p "$ws/.opencode/plugin"
-    sed "s|__LOG__|$log|" "$here/opencode-canary.js" >"$ws/.opencode/plugin/canary.js" ;;
+    python3 - "$here/opencode-canary.js" "$log" >"$ws/.opencode/plugin/canary.js" <<'EOF'
+import json, sys
+src, log = sys.argv[1:]
+sys.stdout.write(open(src).read().replace('"__LOG__"', json.dumps(log)))
+EOF
+    ;;
   *) echo "unknown host: $host" >&2; exit 2 ;;
 esac
 echo "canary hooks for $host written; log: $log"

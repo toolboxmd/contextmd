@@ -27,8 +27,9 @@ model answered "no canary". The Grok prompt-hook result matches Grok's hook
 guide ("stdout of an allowing hook is discarded"). The Grok `PostToolUse`
 result held in both the Chromeria run and a direct `grok -p` run.
 
-Serving adds no model round trip at the context seams; the hook itself took
-about 20 ms (median of 20 runs). A deny and a before-done block each cost one
+Serving adds no model round trip at the context seams. The Python hook took
+about 20 ms per fire: the median wall time of 20 `/usr/bin/time` runs of the
+whole process, Python startup included. A deny and a before-done block each cost one
 extra model round.
 
 ### Size limits
@@ -39,23 +40,29 @@ token at each end.
 | Host | Behavior over the limit |
 | --- | --- |
 | Claude Code | The 11.7 KB context was saved to a file. The model saw a 2 KB preview and the file path, so it quoted only the head token. The exact threshold was not measured. |
-| Codex | Context over 2,500 tokens (the default `additionalContext` spill threshold) was cut in the middle with `Warning: truncated output (original token count: 2988)`. The head and tail tokens both arrived. |
+| Codex | Context of 2,988 tokens was cut in the middle with `Warning: truncated output (original token count: 2988)`. The head and tail tokens both arrived. Codex's app-server protocol documents the default `additionalContext` spill threshold as 2,500 tokens (`HookMetadata.additional_context_limit`). |
 | Grok Build | The context was clipped at 10,000 characters. The tail token was lost. |
 | OpenCode | All 11,951 appended characters arrived. No limit was seen at this size. |
 
 ### Findings that change the serving design
 
-- Grok Build has no tool-result context seam after the call. Serve Grok's
-  tool-result text as `PreToolUse` `additionalContext`, which arrives with the
-  result. Grok has no user-message seam either.
-- Grok loads project hooks only inside a git repository with folder trust
-  (`/hooks-trust`, or `GROK_FOLDER_TRUST=0`). In a plain folder, no project hook
-  fired.
+- Grok Build drops `additionalContext` from `PostToolUse` and from
+  `UserPromptSubmit`. Serve Grok's tool-result text as `PreToolUse`
+  `additionalContext`, which arrives with the result. Other output fields at
+  those two events were not probed.
+- Grok loads project hooks only inside a git repository. With
+  `GROK_FOLDER_TRUST=0` set in every run, no project hook fired in a plain
+  folder, in Chromeria and in a direct `grok -p` run; after `git init`, they
+  fired. Trusting a folder with `/hooks-trust` instead was not tested.
 - Grok sends snake_case event names (`pre_tool_use`) to command hooks.
 - Codex has no `PostToolUseFailure`; failures arrive at `PostToolUse`.
 - OpenCode's appended text is part of the tool output, so it is visible in the
   Chromeria UI.
-- Keep each served entry under the smallest limit: about 2,500 tokens for
+- OpenCode's user-message part is added in a messages transform that is
+  not saved, and the canary adds it only on the first model call after a user
+  message. Later calls in the same turn do not see it, so a serving plugin
+  must add it again on every call it should reach.
+- Keep each served entry under the smallest limit: under 2,500 tokens for
   Codex and under 10,000 characters for Grok. Claude Code spilled at 11.7 KB;
   entries of about 200 characters arrived inline.
 
@@ -75,8 +82,8 @@ Create the thread idle, write the hooks into its folder, then send
   directory, and delete the copied `auth.json` afterwards.
 - **Grok Build:** `canary/setup.sh grok <folder>` runs `git init` and writes
   `<folder>/.grok/hooks/canary.json` with `--pre-context`. The folder needs
-  trust: add a Chromeria Grok provider instance with the environment variable
-  `GROK_FOLDER_TRUST=0`, or trust the folder.
+  trust: the runs added a Chromeria Grok provider instance with the
+  environment variable `GROK_FOLDER_TRUST=0`.
 - **OpenCode:** `canary/setup.sh opencode <folder>` writes
   `<folder>/.opencode/plugin/canary.js`.
 
