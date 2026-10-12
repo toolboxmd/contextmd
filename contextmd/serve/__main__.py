@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 import time
@@ -23,6 +24,13 @@ from .server import Serving, log_records
 ADAPTERS = {"claude-code": claude}
 
 
+def _write(text: str) -> None:
+    """Write straight to fd 1, so a failed write raises here and nothing stays buffered for exit."""
+    data = text.encode()
+    while data:
+        data = data[os.write(1, data):]
+
+
 def hook(host: str) -> int:
     """Fails open: any error is recorded in errors.log and the host proceeds as if unserved."""
     cfg = None
@@ -32,8 +40,7 @@ def hook(host: str) -> int:
             return 0
         event = json.load(sys.stdin)
         adapter = ADAPTERS[host]
-        reply = Serving(cfg).handle(adapter.moment(event))
-        sys.stdout.write(adapter.render(event, reply))
+        Serving(cfg).handle(adapter.moment(event), lambda reply: _write(adapter.render(event, reply)))
     except Exception:
         report = f"{time.time()} {host}\n{traceback.format_exc()}\n"
         try:

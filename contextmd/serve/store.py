@@ -28,8 +28,8 @@ from pathlib import Path
 from .keys import Keys, glob_regex, normalize_error
 
 # Claude Code moves hook context over its limit into a file and shows the model
-# a 2 KB preview (canary, #5), so one entry must fit well inside that.
-MAX_ENTRY_CHARS = 1800
+# a 2 KB preview (canary, #5), so one entry must fit well inside that, in UTF-8 bytes.
+MAX_ENTRY_BYTES = 1800
 KEY_FIELDS = ("command", "path", "error")
 
 
@@ -90,8 +90,8 @@ def parse(path: Path) -> Entry:
     body = "\n".join(lines[end + 1:]).strip()
     if not body:
         raise ValueError("empty body")
-    if len(body) > MAX_ENTRY_CHARS:
-        raise ValueError(f"body is {len(body)} characters, over {MAX_ENTRY_CHARS}")
+    if len(body.encode()) > MAX_ENTRY_BYTES:
+        raise ValueError(f"body is {len(body.encode())} UTF-8 bytes, over {MAX_ENTRY_BYTES}")
     flag = (fields.get("must-know-before") or ["false"])[-1].lower()
     if flag not in ("true", "false"):
         raise ValueError("must-know-before is not true or false")

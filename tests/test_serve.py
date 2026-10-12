@@ -45,7 +45,27 @@ class SegmentsTest(unittest.TestCase):
                          ["cat <<HEREDOC", "gh pr create --body-file -"])
 
     def test_subshells_are_segments(self):
-        self.assertEqual(self.cmds("echo $(gh pr list) x"), ["echo", "gh pr list", "x"])
+        self.assertEqual(self.cmds("echo $(gh pr list) x"), ["echo $() x", "gh pr list"])
+
+    def test_adjacent_operators_and_blank_lines_split(self):
+        self.assertEqual(self.cmds("echo ok &&\ngh pr create"), ["echo ok", "gh pr create"])
+        self.assertEqual(self.cmds("echo ok\n\ngh pr create"), ["echo ok", "gh pr create"])
+        self.assertEqual(self.cmds("make;\n  gh pr create || true"), ["make", "gh pr create", "true"])
+        self.assertEqual(self.cmds("echo a \\\n  b && git push"), ["echo a b", "git push"])
+
+    def test_quoted_punctuation_is_an_argument(self):
+        self.assertEqual(self.cmds("printf '%s' ';' gh pr create"), ["printf %s ; gh pr create"])
+        self.assertEqual(self.cmds('echo "&&" gh pr create'), ["echo && gh pr create"])
+        self.assertEqual(self.cmds("echo \\; gh pr create"), ["echo ; gh pr create"])
+
+    def test_redirections_stay_in_their_segment(self):
+        self.assertEqual(self.cmds("make 2>&1 | tee log"), ["make 2>&1", "tee log"])
+
+    def test_command_substitution_in_double_quotes_is_a_command(self):
+        self.assertEqual(self.cmds('echo "url: $(gh pr create --fill)"'),
+                         ["echo url: $()", "gh pr create --fill"])
+        self.assertEqual(self.cmds('echo "`gh pr create`"'), ["echo ``", "gh pr create"])
+        self.assertEqual(self.cmds("echo '$(gh pr create)'"), ["echo $(gh pr create)"])
 
     def test_unbalanced_quote_is_unsupported(self):
         with self.assertRaises(keys.Unsupported):
@@ -65,7 +85,7 @@ class StoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             entry(d, "good", "Use the template.", command="gh pr create")
             entry(d, "nokey", "No key here.")
-            entry(d, "big", "x" * (store.MAX_ENTRY_CHARS + 1), command="ls")
+            entry(d, "big", "x" * (store.MAX_ENTRY_BYTES + 1), command="ls")
             (Path(d) / "README.md").write_text("not an entry")
             st = store.load([d])
             self.assertEqual([e.id for e in st.entries], ["good"])
@@ -231,6 +251,58 @@ class HookSeamTest(unittest.TestCase):
         self.assertEqual(self.log(), [])
         self.run_cli("on")
         self.assertEqual(self.bash("PreToolUse", "gh pr create", 2)["permissionDecision"], "deny")
+
+    def test_multiline_command_is_denied(self):
+        entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
+        self.assertEqual(self.bash("PreToolUse", "echo ok &&\ngh pr create", 1)["permissionDecision"], "deny")
+
+    def test_printing_punctuation_neither_denies_nor_spends_the_deny(self):
+        entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
+        self.assertIsNone(self.bash("PreToolUse", "printf '%s' ';' gh pr create", 1))
+        self.assertEqual(self.bash("PreToolUse", "gh pr create", 2)["permissionDecision"], "deny")
+
+    def test_failed_output_releases_the_deny(self):
+        entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
+        ev = {"hook_event_name": "PreToolUse", "session_id": self.session, "cwd": str(self.repo),
+              "tool_name": "Bash", "tool_input": {"command": "gh pr create"}, "tool_use_id": "t1"}
+        env = dict(os.environ, CONTEXTMD_SERVING_CONFIG=str(self.cfg))
+        p = subprocess.Popen([sys.executable, "-I", str(BIN), "hook", "claude-code"], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        p.stdout.close()
+        p.stdin.write(json.dumps(ev).encode())
+        p.stdin.close()
+        self.assertEqual(p.wait(timeout=10), 0)
+        p.stderr.close()
+        self.assertEqual(self.log()[-1]["serves"][0]["outcome"], "delivery_failed")
+        self.assertEqual(self.bash("PreToolUse", "gh pr create", 2)["permissionDecision"], "deny")
+        self.assertEqual(self.log()[-1]["serves"][0]["outcome"], "injected")
+
+    def test_interrupted_delivery_is_unverified_and_released(self):
+        from contextmd.serve import config as config_mod
+        from contextmd.serve.server import Moment, Serving
+        entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
+        os.environ["CONTEXTMD_SERVING_CONFIG"] = str(self.cfg)
+        try:
+            cfg = config_mod.load()
+        finally:
+            del os.environ["CONTEXTMD_SERVING_CONFIG"]
+        old = Serving(cfg, clock=lambda: 1000.0)
+        # The hook process dies after reserving, before its output is written.
+        reply, token = old.reserve(Moment("claude-code", self.session, "pre_tool", "pre_tool:t1", str(self.repo),
+                                          "Bash", {"command": "gh pr create"}))
+        self.assertIsNotNone(token)
+        self.assertEqual(self.log()[-1]["serves"][0]["outcome"], "pending")
+        self.assertEqual(self.bash("PreToolUse", "gh pr create", 2)["permissionDecision"], "deny")
+        outcomes = [r["serves"][0]["outcome"] for r in self.log()]
+        self.assertEqual(outcomes, ["delivery_unverified", "injected"])
+
+    def test_one_output_is_bounded_in_bytes(self):
+        entry(self.keys_dir, "wide", "\U0001F600" * 400, command="make")  # 1,600 bytes, permitted
+        self.fire("UserPromptSubmit", prompt="x")
+        out = self.run_cli("hook", "claude-code", stdin=json.dumps({
+            "hook_event_name": "PostToolUse", "session_id": self.session, "cwd": str(self.repo),
+            "tool_name": "Bash", "tool_input": {"command": "make"}, "tool_use_id": "t1"})).stdout
+        self.assertLess(len(out.encode()), 2200)
 
     def test_broken_state_fails_open(self):
         self.cfg.write_text("{not json")

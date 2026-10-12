@@ -1,9 +1,13 @@
 """The serving owner: one machine's serving state and per-moment log.
 
 Every host moment goes through ``Serving.handle``. State lives in one SQLite
-database, and each moment runs in one write transaction, so concurrent hooks
-(parallel tool calls, subagents) reserve the turn budget and deny-once records
-atomically.
+database. A moment first reserves in one write transaction, so concurrent hooks
+(parallel tool calls, subagents) take the turn budget and deny-once records
+atomically; its serves are logged ``pending``. The hook then writes the reply,
+and a second transaction settles the reservation: ``injected`` once the output
+is written, ``delivery_failed`` with the budget, dedupe and deny-once released
+when writing fails. A reservation whose process died before settling is
+released as ``delivery_unverified`` by the next moment after ``STALE_SECONDS``.
 
 Rules (Spec #3, Issue #11):
 
@@ -40,10 +44,14 @@ from .config import Config
 KINDS = ("session_start", "user_message", "pre_tool", "tool_result", "tool_failure", "before_done")
 NEW_EPOCH_SOURCES = ("compact", "clear")
 
-# Characters one hook output may carry before the host spills or clips it.
-# Claude Code: a 2 KB preview of an 11.7 KB payload (canary, #5); session-start
-# context of about 8,000 characters arrives inline (AgentsMD's own hook).
+# UTF-8 bytes of served text one hook output may carry before the host spills
+# or clips it. Claude Code: a 2 KB preview of an 11.7 KB payload (canary, #5);
+# session-start context of about 8,000 characters arrives inline (AgentsMD's
+# own hook). The canary measured ASCII only, so bytes are the safe unit.
 HOST_LIMITS = {"claude-code": {"moment": 2000, "session_start": 9500}}
+
+# Host hooks time out after 5 s; a reservation older than this was never settled.
+STALE_SECONDS = 10
 
 DENY_HEAD = "contextmd: read this before the call, then run the same call again."
 CONTEXT_HEAD = "contextmd:"
@@ -54,10 +62,12 @@ CREATE TABLE IF NOT EXISTS sessions (host TEXT, session TEXT, epoch INTEGER, tur
 CREATE TABLE IF NOT EXISTS turns (host TEXT, session TEXT, turn INTEGER, used INTEGER,
     PRIMARY KEY (host, session, turn));
 CREATE TABLE IF NOT EXISTS served (host TEXT, session TEXT, turn INTEGER, entry TEXT, version TEXT,
-    PRIMARY KEY (host, session, turn, entry, version));
-CREATE TABLE IF NOT EXISTS denied (host TEXT, session TEXT, entry TEXT, version TEXT,
+    seq INTEGER, PRIMARY KEY (host, session, turn, entry, version));
+CREATE TABLE IF NOT EXISTS denied (host TEXT, session TEXT, entry TEXT, version TEXT, seq INTEGER,
     PRIMARY KEY (host, session, entry, version));
 CREATE TABLE IF NOT EXISTS moments (seq INTEGER PRIMARY KEY, record TEXT);
+CREATE TABLE IF NOT EXISTS pending (seq INTEGER PRIMARY KEY, host TEXT, session TEXT, turn INTEGER,
+    chars INTEGER, created REAL);
 """
 
 
@@ -101,20 +111,72 @@ class Serving:
         self.config = config
         self.clock = clock
         config.state.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(config.state / "serving.db", timeout=5, isolation_level=None)
+        # Under the host's 5 s hook timeout, leaving time to write and settle.
+        self.db = sqlite3.connect(config.state / "serving.db", timeout=2, isolation_level=None)
         self.db.executescript(SCHEMA)
 
-    def handle(self, moment: Moment) -> Reply:
-        db = self.db
-        db.execute("BEGIN IMMEDIATE")
+    def handle(self, moment: Moment, deliver) -> Reply:
+        """Reserve, call ``deliver(reply)`` to write it to the host, then settle."""
+        reply, seq = self.reserve(moment)
         try:
-            reply, record = self._handle(moment)
-            db.execute("INSERT INTO moments (record) VALUES (?)", (json.dumps(record),))
-            db.execute("COMMIT")
+            deliver(reply)
         except BaseException:
-            db.execute("ROLLBACK")
+            self.settle(seq, "delivery_failed")
             raise
+        self.settle(seq, "injected")
         return reply
+
+    def reserve(self, moment: Moment) -> tuple[Reply, int]:
+        """Decide the reply and reserve its state; serves are logged ``pending``."""
+        with self._transaction():
+            self._release_stale()
+            seq = self.db.execute("INSERT INTO moments (record) VALUES ('{}')").lastrowid
+            self.seq, self.chars = seq, 0
+            reply, record = self._handle(moment)
+            self.db.execute("UPDATE moments SET record=? WHERE seq=?", (json.dumps(record), seq))
+            if any(s.get("outcome") == "pending" for s in record["serves"]):
+                self.db.execute("INSERT INTO pending VALUES (?, ?, ?, ?, ?, ?)",
+                                (seq, moment.host, moment.session, record["turn"], self.chars, self.clock()))
+        return reply, seq
+
+    def settle(self, seq: int, outcome: str) -> None:
+        with self._transaction():
+            self._settle(seq, outcome)
+
+    def _transaction(self):
+        db = self.db
+
+        class Tx:
+            def __enter__(self):
+                db.execute("BEGIN IMMEDIATE")
+
+            def __exit__(self, exc_type, *_):
+                db.execute("ROLLBACK" if exc_type else "COMMIT")
+
+        return Tx()
+
+    def _settle(self, seq: int, outcome: str) -> None:
+        row = self.db.execute("SELECT host, session, turn, chars FROM pending WHERE seq=?", (seq,)).fetchone()
+        if row is None:
+            return  # nothing pending, or already released as stale
+        if outcome != "injected":
+            host, session, turn, chars = row
+            self.db.execute("DELETE FROM served WHERE seq=?", (seq,))
+            self.db.execute("DELETE FROM denied WHERE seq=?", (seq,))
+            self.db.execute("UPDATE turns SET used = used - ? WHERE host=? AND session=? AND turn=?",
+                            (chars, host, session, turn))
+        self.db.execute("DELETE FROM pending WHERE seq=?", (seq,))
+        (raw,) = self.db.execute("SELECT record FROM moments WHERE seq=?", (seq,)).fetchone()
+        record = json.loads(raw)
+        for serve in record["serves"]:
+            if serve.get("outcome") == "pending":
+                serve["outcome"] = outcome
+        self.db.execute("UPDATE moments SET record=? WHERE seq=?", (json.dumps(record), seq))
+
+    def _release_stale(self) -> None:
+        cutoff = self.clock() - STALE_SECONDS
+        for (seq,) in self.db.execute("SELECT seq FROM pending WHERE created < ?", (cutoff,)).fetchall():
+            self._settle(seq, "delivery_unverified")
 
     # -- state ------------------------------------------------------------
 
@@ -136,6 +198,7 @@ class Serving:
         return row[0] if row else 0
 
     def _spend(self, m: Moment, turn: int, chars: int) -> None:
+        self.chars += chars
         self.db.execute(
             "INSERT INTO turns VALUES (?, ?, ?, ?) ON CONFLICT DO UPDATE SET used = used + excluded.used",
             (m.host, m.session, turn, chars))
@@ -146,8 +209,8 @@ class Serving:
             (m.host, m.session, turn, e.id, e.version)).fetchone() is not None
 
     def _mark_served(self, m: Moment, turn: int, e) -> None:
-        self.db.execute("INSERT OR IGNORE INTO served VALUES (?, ?, ?, ?, ?)",
-                        (m.host, m.session, turn, e.id, e.version))
+        self.db.execute("INSERT OR IGNORE INTO served VALUES (?, ?, ?, ?, ?, ?)",
+                        (m.host, m.session, turn, e.id, e.version, self.seq))
 
     def _denied(self, m: Moment, e) -> bool:
         return self.db.execute(
@@ -187,12 +250,13 @@ class Serving:
                 serve.update(version=None, outcome="not_on_machine")
                 continue
             serve["version"] = hashlib.sha256(text.encode()).hexdigest()[:12]
-            if len(text) > f.max_chars or used + len(text) > limit:
+            size = len(text.encode())
+            if len(text) > f.max_chars or used + size > limit:
                 serve["outcome"] = "cut_budget"
                 continue
-            serve["outcome"] = "injected"
+            serve["outcome"] = "pending"
             parts.append(text)
-            used += len(text)
+            used += size + 2
         return Context("\n\n".join(parts)) if parts else Nothing()
 
     def _exact_keys(self, m: Moment, turn: int, record: dict) -> Reply:
@@ -217,22 +281,23 @@ class Serving:
                                  "outcome": outcome, "remote": "not_called", **extra})
 
     def _fit(self, m, turn, head: str, seam: str):
-        """First fit within the turn budget and the host's per-moment limit."""
+        """First fit within the turn budget (characters) and the host's per-output limit (bytes)."""
         budget = self.config.turn_budget - self._used(m, turn)
         limit = HOST_LIMITS.get(m.host, {}).get("moment", 0)
         picked: list = []
 
         def fits(e, record, key) -> bool:
             nonlocal budget, limit
-            cost = len(e.text) + 2 + (0 if picked else len(head))
-            if cost > budget or cost > limit:
+            chars = len(e.text) + 2 + (0 if picked else len(head))
+            size = len(e.text.encode()) + 2 + (0 if picked else len(head.encode()))
+            if chars > budget or size > limit:
                 self._serve(record, e, key, "cut_budget", seam=seam,
-                            cut="turn" if cost > budget else "moment")
+                            cut="turn" if chars > budget else "moment")
                 return False
-            budget, limit = budget - cost, limit - cost
+            budget, limit = budget - chars, limit - size
             picked.append(e)
             self._mark_served(m, turn, e)
-            self._serve(record, e, key, "injected", seam=seam)
+            self._serve(record, e, key, "pending", seam=seam)
             return True
 
         def text() -> str | None:
@@ -252,8 +317,8 @@ class Serving:
             elif self._denied(m, e) or self._served(m, turn, e):
                 self._serve(record, e, key, "deduped")
             elif fits(e, record, key):
-                self.db.execute("INSERT INTO denied VALUES (?, ?, ?, ?)",
-                                (m.host, m.session, e.id, e.version))
+                self.db.execute("INSERT INTO denied VALUES (?, ?, ?, ?, ?)",
+                                (m.host, m.session, e.id, e.version, self.seq))
         out = text()
         return Deny(out) if out else Nothing()
 

@@ -47,9 +47,10 @@ def render(event: dict, reply: Reply) -> str:
         case Deny(reason=reason):
             return json.dumps({"hookSpecificOutput": {
                 "hookEventName": name, "permissionDecision": "deny",
-                "permissionDecisionReason": reason}})
+                "permissionDecisionReason": reason}}, ensure_ascii=False)
         case Context(text=text):
-            return json.dumps({"hookSpecificOutput": {"hookEventName": name, "additionalContext": text}})
+            return json.dumps({"hookSpecificOutput": {"hookEventName": name, "additionalContext": text}},
+                              ensure_ascii=False)
     raise TypeError(reply)
 
 
