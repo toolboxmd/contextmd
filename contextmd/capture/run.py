@@ -295,10 +295,10 @@ class Capture:
         if live is None or not out.exists():
             return "missing"
         state = chromeria.run_state(self.ch, live["child_thread"])
-        if state in (None, "running", "queued"):
-            return "running"
-        if state != "completed":
+        if state in chromeria.RUN_FAILED:
             return "run-failed"
+        if state != "completed":
+            return "running"  # running, queued, or a passing status between them
         if job["step"] == "judge" and any(
                 self._output_state(run, self._extract_job(run, job["segment"], n)) != "done"
                 for n in run["targets"]["extractors"]):

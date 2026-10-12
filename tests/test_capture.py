@@ -358,6 +358,11 @@ class RunTest(unittest.TestCase):
         out.write_text("## half")
         self.assertIn({"job": f"{seg}-extract-sol", "task_id": "t", "output": "run-failed"},
                       self.cap.next_jobs()["invalid"])
+        # A status between running and completed is waited on, not failed.
+        self.ch.execute("UPDATE orchestration_v2_projection_runs SET payload_json=? WHERE run_id='run-dead'",
+                        (json.dumps({"status": "completing"}),))
+        self.assertIn({"job": f"{seg}-extract-sol", "task_id": "t", "output": "running"},
+                      self.cap.next_jobs()["waiting"])
 
     def test_recapture_with_two_lessons_at_one_event_keeps_every_lesson(self):
         run = self.prepare()

@@ -18,6 +18,8 @@ ITEMS = "orchestration_v2_projection_turn_items"
 RUNS = "orchestration_v2_projection_runs"
 # Turn item statuses whose text may still change.
 UNFINISHED = ("running", "pending", "queued")
+# Run statuses that end a run without a result.
+RUN_FAILED = ("failed", "cancelled", "interrupted")
 
 
 def connect(path: str) -> sqlite3.Connection:
