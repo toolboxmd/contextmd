@@ -55,22 +55,30 @@ async function moment(raw) {
     });
     if (res.status !== 200) return null;
     const reply = await res.json();
+    // True only when the module confirmed the settle; a late one is refused and logged
+    // delivery_unverified, so the rule is served again rather than counted as shown.
     const settle = () =>
       fetch(`${ep.url}/contextmd/v1/settle/${delivery}`, {
         method: "POST",
         headers: { authorization: `Bearer ${ep.token}` },
         signal: AbortSignal.timeout(300),
-      }).catch(() => {});
+      })
+        .then((r) => r.status === 204)
+        .catch(() => false);
     return { reply, settle };
   } catch {
     return null;
   }
 }
 
-// Per session: served texts waiting for, or already in, the current user message.
+// Per session: served texts waiting for, or already in, the current user message, and the
+// turn they belong to. A reply that arrives after a new user message belongs to the old turn
+// and is dropped.
 const served = new Map();
+const turns = new Map();
 
-function queue(sessionID, text, settle) {
+function queue(sessionID, turn, text, settle) {
+  if ((turns.get(sessionID) || 0) !== turn) return;
   const list = served.get(sessionID) || [];
   list.push({ text, settle, settled: false });
   served.set(sessionID, list);
@@ -81,10 +89,12 @@ export default async function contextmd(ctx) {
   return {
     "chat.message": async (input) => {
       // A new user message: earlier served text belonged to the previous turn.
+      const turn = (turns.get(input.sessionID) || 0) + 1;
+      turns.set(input.sessionID, turn);
       served.delete(input.sessionID);
       const got = await moment({ hook: "chat.message", directory, input: { sessionID: input.sessionID } });
       const text = got && got.reply && got.reply.context;
-      if (text) queue(input.sessionID, text, got.settle);
+      if (text) queue(input.sessionID, turn, text, got.settle);
     },
     "experimental.chat.messages.transform": async (_input, output) => {
       const last = [...output.messages].reverse().find((m) => m.info.role === "user");
@@ -100,12 +110,13 @@ export default async function contextmd(ctx) {
           synthetic: true,
         });
         if (!item.settled) {
-          item.settled = true;
+          item.settled = true; // one settle attempt per reply, confirmed or not
           await item.settle();
         }
       }
     },
     "tool.execute.before": async (input, output) => {
+      const turn = turns.get(input.sessionID) || 0;
       const got = await moment({
         hook: "tool.execute.before",
         directory,
@@ -113,11 +124,13 @@ export default async function contextmd(ctx) {
         output: { args: (output && output.args) || {} },
       });
       const text = got && got.reply && got.reply.deny;
-      if (!text) return;
-      queue(input.sessionID, text, got.settle);
+      // A deny whose rule could not reach the model must not stop the call.
+      if (!text || (turns.get(input.sessionID) || 0) !== turn) return;
+      queue(input.sessionID, turn, text, got.settle);
       throw new Error(STOPPED);
     },
     "tool.execute.after": async (input, output) => {
+      const turn = turns.get(input.sessionID) || 0;
       const out = output && typeof output.output === "string" ? output.output : "";
       const got = await moment({
         hook: "tool.execute.after",
@@ -126,7 +139,7 @@ export default async function contextmd(ctx) {
         output: { metadata: { exit: output && output.metadata ? output.metadata.exit : undefined }, output: out.slice(-MAX_OUTPUT) },
       });
       const text = got && got.reply && got.reply.context;
-      if (text) queue(input.sessionID, text, got.settle);
+      if (text) queue(input.sessionID, turn, text, got.settle);
     },
     event: async ({ event }) => {
       if (event && event.type === "session.compacted" && event.properties && event.properties.sessionID) {

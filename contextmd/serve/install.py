@@ -24,11 +24,15 @@ to ``<file>.contextmd-backup``.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
+import time
+import tomllib
 from pathlib import Path
 
 
@@ -74,46 +78,72 @@ def plugin_source(base: Path) -> str:
 
 
 def _write(path: Path, text: str, mode: int | None = None, backup: bool = True) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if backup and path.exists():
-        shutil.copy2(path, path.with_name(path.name + ".contextmd-backup"))
-    tmp = path.with_name(path.name + ".contextmd-tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode if mode is not None else 0o644)
+    """Replace a file atomically. A symlink is followed, so its target is updated and backed
+    up; an existing file keeps its permissions unless ``mode`` says otherwise."""
+    target = Path(os.path.realpath(path))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if mode is None:
+        mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else 0o644
+    if backup and target.exists():
+        shutil.copy2(target, target.with_name(target.name + ".contextmd-backup"))
+    tmp = target.with_name(target.name + ".contextmd-tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     with os.fdopen(fd, "w") as fh:
         fh.write(text)
-    if mode is not None:
-        os.chmod(tmp, mode)
-    os.replace(tmp, path)
+    os.chmod(tmp, mode)
+    os.replace(tmp, target)
 
 
-def issue_credential(base: Path, t3: str) -> Path:
-    """Issue the hooks' Chromeria session and store it; revoke the session it replaces."""
+def _t3(t3: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([t3, "auth", "session", *args], capture_output=True, text=True)
+
+
+def issue_credential(base: Path, t3: str, renew: bool = False) -> Path:
+    """The hooks' Chromeria session, stored mode 0600 in ``hook-credential``.
+
+    An existing credential is kept unless ``renew`` or it expires within 30 days. A
+    replaced session is revoked; a session that could not be revoked stays listed
+    under ``revokePending`` and is retried on the next install, which then fails
+    until it succeeds, so an old year-long session never silently stays active.
+    """
     p = paths(base)
-    old = None
     try:
-        old = json.loads(p["credential"].read_text()).get("sessionId")
+        current = json.loads(p["credential"].read_text())
     except (OSError, ValueError):
-        pass
-    done = subprocess.run([t3, "auth", "session", "issue", "--base-dir", str(base), "--subject", "contextmd-hook",
-                           "--label", "ContextMD hooks", "--scope", "orchestration:read", "--ttl", "365d", "--json"],
-                          capture_output=True, text=True)
-    if done.returncode != 0:
-        raise InstallError(f"{t3} auth session issue failed: {done.stderr.strip()[:300]}")
-    issued = json.loads(done.stdout)
-    _write(p["credential"], json.dumps({k: issued[k] for k in ("sessionId", "token", "expiresAt")}) + "\n",
+        current = {}
+    pending = list(current.pop("revokePending", None) or [])
+    expires = current.get("expiresAt") or ""
+    soon = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 30 * 86400))
+    if renew or not current.get("token") or expires < soon:
+        done = _t3(t3, "issue", "--base-dir", str(base), "--subject", "contextmd-hook", "--label",
+                   "ContextMD hooks", "--scope", "orchestration:read", "--ttl", "365d", "--json")
+        if done.returncode != 0:
+            raise InstallError(f"{t3} auth session issue failed: {done.stderr.strip()[:300]}")
+        issued = json.loads(done.stdout)
+        if current.get("sessionId") and current["sessionId"] != issued["sessionId"]:
+            pending.append(current["sessionId"])
+        current = {k: issued[k] for k in ("sessionId", "token", "expiresAt")}
+    failed = [sid for sid in pending
+              if _t3(t3, "revoke", "--base-dir", str(base), sid).returncode != 0]
+    _write(p["credential"], json.dumps({**current, "revokePending": failed} if failed else current) + "\n",
            mode=0o600, backup=False)
-    if old and old != issued["sessionId"]:
-        subprocess.run([t3, "auth", "session", "revoke", "--base-dir", str(base), old], capture_output=True)
+    if failed:
+        raise InstallError(f"could not revoke the replaced hook session(s) {', '.join(failed)}; "
+                           f"they stay listed in {p['credential']} and the next install retries them")
     return p["credential"]
 
 
 def _merge_hooks(path: Path, block: dict) -> None:
-    """Replace ContextMD's groups in a hooks file, keeping every other hook."""
+    """Replace ContextMD's hook entries in a hooks file, keeping every other hook and group setting."""
     data = json.loads(path.read_text()) if path.exists() else {}
     hooks = data.setdefault("hooks", {})
     for event, groups in hooks.items():
-        hooks[event] = [g for g in groups
-                        if not any(MARK in str(h.get("command", "")) for h in g.get("hooks", []))]
+        kept = []
+        for g in groups:
+            entries = [h for h in g.get("hooks", []) if MARK not in str(h.get("command", ""))]
+            if entries or not g.get("hooks"):
+                kept.append({**g, "hooks": entries} if "hooks" in g else g)
+        hooks[event] = kept
     for event, groups in block["hooks"].items():
         hooks.setdefault(event, []).extend(groups)
     data["hooks"] = {e: g for e, g in hooks.items() if g}
@@ -163,30 +193,63 @@ def trust_codex(home: Path, cwd: Path) -> int:
     ours = [h for d in listed.get("data", []) for h in d.get("hooks", [])
             if MARK in str(h.get("command", "")) and Path(h["sourcePath"]).resolve() == (home / "hooks.json").resolve()]
     config = home / "config.toml"
-    lines = config.read_text().splitlines() if config.exists() else []
-    for h in ours:
-        table = f"[hooks.state.{json.dumps(h['key'])}]"
-        value = f"trusted_hash = {json.dumps(h['currentHash'])}"
-        if table in lines:
-            i = lines.index(table)
-            j = next((k for k in range(i + 1, len(lines)) if lines[k].startswith("trusted_hash")), None)
-            if j is not None:
-                lines[j] = value
-            else:
-                lines.insert(i + 1, value)
-        else:
-            lines += ["", table, value]
-    _write(config, "\n".join(lines) + "\n")
+    original = config.read_text() if config.exists() else ""
+    text = _set_trust(original, {h["key"]: h["currentHash"] for h in ours})
+    _write(config, text)
     return len(ours)
 
 
-def install(harness: str, base: Path, t3: str = "t3") -> list[str]:
+def _table_key(line: str) -> str | None:
+    """The hook key of a ``[hooks.state."<key>"]`` header line (comments allowed), else None."""
+    stripped = line.strip()
+    if not stripped.startswith("[") or stripped.startswith("[["):
+        return None
+    try:
+        parsed = tomllib.loads(stripped)
+    except tomllib.TOMLDecodeError:
+        return None
+    state = parsed.get("hooks", {}).get("state", {}) if isinstance(parsed.get("hooks"), dict) else {}
+    if len(parsed) == 1 and isinstance(state, dict) and len(state) == 1:
+        return next(iter(state))
+    return None
+
+
+def _set_trust(original: str, hashes: dict[str, str]) -> str:
+    """Set ``trusted_hash`` in each hook's own table, keeping every other line, then prove the result
+    parses and that only those hashes changed."""
+    before = tomllib.loads(original)
+    lines = original.splitlines()
+    for key, value in hashes.items():
+        line = f"trusted_hash = {json.dumps(value)}"
+        header = next((i for i, l in enumerate(lines) if _table_key(l) == key), None)
+        if header is None:
+            lines += ["", f"[hooks.state.{json.dumps(key)}]", line]
+            continue
+        end = next((i for i in range(header + 1, len(lines)) if lines[i].strip().startswith("[")), len(lines))
+        found = next((i for i in range(header + 1, end)
+                      if lines[i].split("=", 1)[0].strip() == "trusted_hash"), None)
+        if found is None:
+            lines.insert(header + 1, line)
+        else:
+            lines[found] = line
+    text = "\n".join(lines) + "\n"
+    after = tomllib.loads(text)
+    expected = copy.deepcopy(before)
+    states = expected.setdefault("hooks", {}).setdefault("state", {})
+    for key, value in hashes.items():
+        states.setdefault(key, {})["trusted_hash"] = value
+    if after != expected:
+        raise InstallError("updating Codex trust hashes would change other settings; config.toml left as it was")
+    return text
+
+
+def install(harness: str, base: Path, t3: str = "t3", renew: bool = False) -> list[str]:
     """Install the hook for ``harness``; returns the files written."""
     base = base.expanduser().resolve()
     p = paths(base)
     if not (base / "userdata").is_dir():
         raise InstallError(f"{base} is not a Chromeria base directory (no userdata)")
-    written = [str(issue_credential(base, t3))]
+    written = [str(issue_credential(base, t3, renew))]
     home = Path.home()
     if harness == "claude":
         settings = Path(os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")) / "settings.json"

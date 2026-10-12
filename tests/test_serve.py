@@ -149,14 +149,12 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(sum("contextmd-hook" in g["hooks"][0]["command"] for g in pre), 1)
         self.assertIn(str(self.base), pre[1]["hooks"][0]["command"])
         cred = self.base / "userdata" / "contextmd" / "hook-credential"
-        self.assertEqual(json.loads(cred.read_text())["token"], "tok2")
+        self.assertEqual(json.loads(cred.read_text())["token"], "tok1")  # a valid credential is reused
         self.assertEqual(cred.stat().st_mode & 0o777, 0o600)
         calls = self.calls.read_text().splitlines()
+        self.assertEqual(len(calls), 1)
         self.assertIn("--subject contextmd-hook", calls[0])
         self.assertIn("--scope orchestration:read", calls[0])
-        self.assertEqual(calls[1:], [f"auth session issue --base-dir {self.base} --subject contextmd-hook --label "
-                                     f"ContextMD hooks --scope orchestration:read --ttl 365d --json",
-                                     f"auth session revoke --base-dir {self.base} s1"])
 
     def test_codex_install_trusts_only_contextmd_hooks(self):
         codex = self.home / ".codex"
@@ -170,6 +168,25 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(toml.count("trusted_hash"), n_ours)
         self.assertNotIn(":e:0\"]", toml)  # the other hook stays untrusted by us
 
+    def test_codex_trust_touches_only_contextmd_tables(self):
+        codex = self.home / ".codex"
+        codex.mkdir(parents=True)
+        self.run_cli("install", "codex", "--base", str(self.base))
+        hooks = codex / "hooks.json"
+        key0 = f"{hooks}:e:0"
+        # Our first table loses its hash and gains an inline comment; another hook's table follows it.
+        toml = (codex / "config.toml").read_text()
+        toml = toml.replace(f'[hooks.state.{json.dumps(key0)}]', f'[hooks.state.{json.dumps(key0)}]  # contextmd')
+        lines = [l for l in toml.splitlines() if not (l.startswith("trusted_hash") and '"sha256:0"' in l)]
+        lines += ["", '[hooks.state."/other/hooks.json:pre_tool_use:0:0"]', 'trusted_hash = "sha256:other"']
+        (codex / "config.toml").write_text("\n".join(lines) + "\n")
+        self.run_cli("install", "codex", "--base", str(self.base))
+        import tomllib
+        state = tomllib.loads((codex / "config.toml").read_text())["hooks"]["state"]
+        self.assertEqual(state["/other/hooks.json:pre_tool_use:0:0"]["trusted_hash"], "sha256:other")
+        self.assertEqual(state[key0]["trusted_hash"], "sha256:0")
+        self.assertEqual((codex / "config.toml").read_text().count(json.dumps(key0)), 1)
+
     def test_grok_and_opencode_files(self):
         self.run_cli("install", "grok", "--base", str(self.base))
         grok = json.loads((self.home / ".grok" / "hooks" / "contextmd.json").read_text())
@@ -180,10 +197,126 @@ class InstallTest(unittest.TestCase):
         self.assertIn(json.dumps(str(self.base)), plugin)
         self.assertNotIn("const BASE = \"__BASE__\"", plugin)
 
+    def test_reinstall_keeps_other_hooks_in_a_shared_group(self):
+        settings = self.home / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        self.run_cli("install", "claude", "--base", str(self.base))
+        data = json.loads(settings.read_text())
+        group = data["hooks"]["PreToolUse"][0]
+        group["matcher"] = "Bash"
+        group["hooks"].append({"type": "command", "command": "/usr/local/bin/other-hook"})
+        settings.write_text(json.dumps(data))
+        self.run_cli("install", "claude", "--base", str(self.base))
+        pre = json.loads(settings.read_text())["hooks"]["PreToolUse"]
+        commands = [h["command"] for g in pre for h in g["hooks"]]
+        self.assertIn("/usr/local/bin/other-hook", commands)
+        self.assertEqual(sum("contextmd-hook" in c for c in commands), 1)
+        self.assertEqual(pre[0]["matcher"], "Bash")
+
+    def test_updates_keep_permissions_and_follow_symlinks(self):
+        real = self.root / "dotfiles" / "settings.json"
+        real.parent.mkdir()
+        real.write_text(json.dumps({"model": "x"}))
+        real.chmod(0o600)
+        link = self.home / ".claude" / "settings.json"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(real)
+        self.run_cli("install", "claude", "--base", str(self.base))
+        self.assertTrue(link.is_symlink())
+        self.assertIn("contextmd-hook", real.read_text())
+        self.assertEqual(real.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(real.with_name("settings.json.contextmd-backup").read_text()), {"model": "x"})
+
+    def test_reuses_a_valid_credential_and_renews_on_request(self):
+        self.run_cli("install", "grok", "--base", str(self.base))
+        self.run_cli("install", "opencode", "--base", str(self.base))
+        cred = self.base / "userdata" / "contextmd" / "hook-credential"
+        self.assertEqual(json.loads(cred.read_text())["token"], "tok1")
+        self.run_cli("install", "grok", "--base", str(self.base), "--renew")
+        self.assertEqual(json.loads(cred.read_text())["token"], "tok2")
+        self.assertIn(f"auth session revoke --base-dir {self.base} s1", self.calls.read_text())
+
+    def test_a_failed_revocation_fails_the_install_and_is_retried(self):
+        self.run_cli("install", "grok", "--base", str(self.base))
+        real = (self.bin / "t3").read_text()
+        (self.bin / "t3").write_text(real.replace("#!/bin/sh\n", '#!/bin/sh\n[ "$3" = revoke ] && exit 1\n', 1))
+        done = self.run_cli("install", "grok", "--base", str(self.base), "--renew", check=False)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("could not revoke", done.stdout)
+        self.assertNotIn("tok", done.stdout)
+        cred = json.loads((self.base / "userdata" / "contextmd" / "hook-credential").read_text())
+        self.assertEqual(cred["revokePending"], ["s1"])
+        (self.bin / "t3").write_text(real)
+        self.run_cli("install", "grok", "--base", str(self.base))
+        cred = json.loads((self.base / "userdata" / "contextmd" / "hook-credential").read_text())
+        self.assertNotIn("revokePending", cred)
+
     def test_refuses_a_directory_that_is_not_a_chromeria_base(self):
         done = self.run_cli("install", "claude", "--base", str(self.root / "nothing"), check=False)
         self.assertEqual(done.returncode, 1)
         self.assertIn("not a Chromeria base directory", done.stdout)
+
+
+PLUGIN_SCRIPT = r"""
+const [pluginPath] = process.argv.slice(2);
+const replies = [];      // pending moment replies, resolved by the script
+const settles = [];
+globalThis.fetch = (url) => {
+  if (url.endsWith("/moment")) {
+    return new Promise((resolve) => replies.push((body) =>
+      resolve({ status: 200, json: async () => body })));
+  }
+  settles.push(url);
+  return Promise.resolve({ status: url.includes("expired") ? 404 : 204 });
+};
+const { default: plugin } = await import(pluginPath);
+const hooks = await plugin({ directory: "/tmp" });
+const msgs = (text) => ({ messages: [{ info: { role: "user", id: "m1", sessionID: "s" }, parts: [] }] });
+const out = {};
+
+// A tool reply that arrives after the next user message belongs to the old turn.
+const late = hooks["tool.execute.after"]({ tool: "bash", sessionID: "s", callID: "c1", args: {} }, { output: "", metadata: { exit: 0 } });
+const turn = hooks["chat.message"]({ sessionID: "s" }, {});
+replies[1]({ context: "NEW TURN" });
+await turn;
+replies[0]({ context: "OLD TURN" });
+await late;
+let m = msgs();
+await hooks["experimental.chat.messages.transform"]({}, m);
+out.parts = m.messages[0].parts.map((p) => p.text);
+
+// A deny is shown through the user message; the call is stopped with a short reason.
+const denied = hooks["tool.execute.before"]({ tool: "bash", sessionID: "s", callID: "c2" }, { args: { command: "git commit" } });
+replies[2]({ deny: "RULE" });
+out.thrown = await denied.then(() => null, (e) => e.message);
+m = msgs();
+await hooks["experimental.chat.messages.transform"]({}, m);
+out.afterDeny = m.messages[0].parts.map((p) => p.text);
+out.settles = settles.length;
+console.log(JSON.stringify(out));
+"""
+
+
+class OpenCodePluginTest(unittest.TestCase):
+    def test_drops_replies_from_an_earlier_turn_and_shows_denies_in_the_user_message(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            (base / "userdata" / "contextmd").mkdir(parents=True)
+            (base / "userdata" / "server-runtime.json").write_text(json.dumps({"origin": "http://127.0.0.1:1"}))
+            (base / "userdata" / "contextmd" / "hook-credential").write_text(json.dumps({"token": "t"}))
+            from contextmd.serve import install
+            plugin = base / "contextmd.mjs"
+            plugin.write_text(install.plugin_source(base))
+            script = base / "run.mjs"
+            script.write_text(PLUGIN_SCRIPT)
+            done = subprocess.run(["node", str(script), str(plugin)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            out = json.loads(done.stdout)
+            self.assertEqual(out["parts"], ["NEW TURN"])
+            self.assertIn("stopped this call", out["thrown"])
+            self.assertNotIn("RULE", out["thrown"])
+            self.assertEqual(out["afterDeny"], ["NEW TURN", "RULE"])
+            self.assertEqual(out["settles"], 2)
 
 
 class HookScriptTest(unittest.TestCase):

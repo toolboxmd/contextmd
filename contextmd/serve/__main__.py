@@ -25,6 +25,7 @@ def main(argv=None) -> int:
         p.add_argument("--base", required=True, type=Path)
         if name == "install":
             p.add_argument("--t3", default="t3", help="Chromeria's t3 command (issues the hooks' session)")
+            p.add_argument("--renew", action="store_true", help="issue a new hook session even if the current one is valid")
     for name in ("on", "off", "status"):
         sub.add_parser(name).add_argument("--base", required=True, type=Path)
     lp = sub.add_parser("log")
@@ -42,7 +43,7 @@ def main(argv=None) -> int:
     p = install.paths(base)
     if ns.cmd == "install":
         try:
-            for written in install.install(ns.harness, base, ns.t3):
+            for written in install.install(ns.harness, base, ns.t3, ns.renew):
                 print(written)
         except install.InstallError as exc:
             print(f"contextmd-serve install: {exc}")
