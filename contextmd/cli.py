@@ -39,7 +39,7 @@ def main(argv=None) -> int:
     r.add_argument("--failed", action="store_true")
     r.add_argument("--note")
     cs.add_parser("commit", help="write judged segments to the queue and move cursors")
-    ab = cs.add_parser("abandon", help="close the open run; its uncommitted segments stay uncaptured")
+    ab = cs.add_parser("abandon", help="close the open run; the next run captures its uncommitted events again")
     ab.add_argument("--reason", required=True)
     rp = cs.add_parser("report", help="counts per step and thread kind, cost per model step")
     rp.add_argument("--run")

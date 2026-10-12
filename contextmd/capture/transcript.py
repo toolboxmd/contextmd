@@ -134,7 +134,7 @@ def document(header: str, context: list[Line], body: list[Line]) -> tuple[str, d
     """The transcript file text and line number -> Line for the body lines.
 
     Context lines are numbered too, but they are outside this capture and are not
-    in the returned map, so an item citing one is rejected.
+    in the returned map, so an item citing one is anchored to the segment start.
     """
     parts = [header]
     n = 0

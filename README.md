@@ -39,8 +39,11 @@ attempt that writes its own output file. Only one run can be open at a time;
 `capture abandon --reason <text>` closes a stuck run, and its uncommitted
 segments are captured again by the next run.
 
-Each segment stops before the first turn item that is still running, so a
-cursor never moves past text that may still change. A segment whose lesson
+The first time a run sees a thread, it records where capture starts, so a
+first capture that never commits is retried from there. While a thread is
+still running, its segment stops before the first turn item still being
+written, so a cursor never moves past text that may still change. A segment
+captured again never replaces another run's queue items. A segment whose lesson
 has no Agent Observer event to anchor to stays uncommitted, with the reason in
 `run.json`.
 

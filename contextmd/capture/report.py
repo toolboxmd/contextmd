@@ -35,6 +35,8 @@ def build(run: dict, items: list[dict]) -> dict:
                                         if (t["status"] or "").startswith("skipped"))),
         "threads_captured": sum(1 for t in threads.values() if t["status"] == "captured"),
         "threads_no_new_events": sum(1 for t in threads.values() if t["status"] == "no-new-events"),
+        "threads_held_back": sum(1 for t in threads.values() if t.get("held_back")),
+        "segment_errors": {s["id"]: s["error"] for s in run["segments"] if s.get("error")},
         "segments": len(run["segments"]),
         "segments_committed": sum(1 for s in run["segments"] if s["committed"]),
         "extracted_items": dict(Counter(m["extractor"] for it in items for m in it["members"])),

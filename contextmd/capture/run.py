@@ -102,9 +102,11 @@ class Capture:
             if active:
                 raise RunError(f"run {active} is still open; finish it with next/record/commit")
             self._sync()
-            run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            if experiment:
-                run_id += f"-{experiment}"
+            stem = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + (f"-{experiment}" if experiment else "")
+            run_id, n = stem, 1
+            while self._run_dir(run_id).exists():  # two runs in one second must not share a directory
+                n += 1
+                run_id = f"{stem}-{n}"
             run = self._plan(run_id, since, until, thread_ids, whole, experiment)
             self.save(run)
             self.store.set_active_run(run_id)
@@ -143,13 +145,21 @@ class Capture:
                     return False
                 return it.ordinal > cur["ordinal"] if cur else it.ts >= since
             fresh = [it for it in all_items if new(it)]
-            # Stop before the first item still being written; the next run starts there.
-            busy = next((i for i, it in enumerate(fresh) if it.status in chromeria.UNFINISHED), None)
-            if busy is not None:
-                fresh = fresh[:busy]
-                entry["held_back"] = True
             old = [it for it in all_items if not new(it) and it.ts < until and
                    (it.ordinal <= cur["ordinal"] if cur else it.ts < since)]
+            if fresh and not cur and not experiment:
+                # Record where capture starts, so a first capture that never commits
+                # is retried from here instead of from the next window's start.
+                start = old[-1].ordinal if old else fresh[0].ordinal - 1
+                self.store.set_cursor(tid, {"ordinal": start, "item_id": None, "ts": since,
+                                            "run": run_id, "baseline": True})
+            # While the thread is still running, stop before its first unfinished item;
+            # the next run starts there. A finished thread's leftover items are final.
+            if chromeria.run_state(self.ch, tid) in ("running", "queued"):
+                busy = next((i for i, it in enumerate(fresh) if it.status in chromeria.UNFINISHED), None)
+                if busy is not None:
+                    fresh = fresh[:busy]
+                    entry["held_back"] = True
             body_lines = transcript.render(fresh)
             if not body_lines:
                 entry["status"] = "no-new-events"
@@ -394,6 +404,8 @@ class Capture:
                     continue
                 seg.pop("error", None)
                 for it in queue_items:
+                    if not run["experiment"]:
+                        self._free_key(it)
                     if run["experiment"]:
                         write_json(self._run_dir(run["run_id"]) / "items" /
                                    f"{Store.key_name(it['key'])}.json", it)
@@ -412,10 +424,23 @@ class Capture:
                 self.store.set_active_run(None)
             self.save(run)
             return {"run_id": run["run_id"], "committed_segments": committed, "state": run["state"],
-                    "open_segments": sum(1 for s in run["segments"] if not s["committed"])}
+                    "open_segments": sum(1 for s in run["segments"] if not s["committed"]),
+                    "errors": {s["id"]: s["error"] for s in run["segments"] if s.get("error")}}
+
+    def _free_key(self, item: dict) -> None:
+        """Bump the item's index past keys an earlier run already holds in the queue.
+
+        A segment captured again after ``abandon`` must not replace another run's
+        lessons; a repeated commit of the same run still rewrites its own items.
+        """
+        while True:
+            held = read_json(self.store.queue / f"{Store.key_name(item['key'])}.json")
+            if held is None or held["run"]["run_id"] == item["run"]["run_id"]:
+                return
+            item["key"]["index"] += 1
 
     def abandon(self, reason: str) -> dict:
-        """Close the open run without its uncommitted segments; their events stay uncaptured."""
+        """Close the open run; the next run captures its uncommitted segments' events again."""
         with self.store.locked():
             run = self.load()
             run["state"] = "abandoned"

@@ -110,6 +110,11 @@ class ParseTest(unittest.TestCase):
             items.parse_judge(ok + '{"a":["A01"],"b":[],"grade":"keep","learned_from":"user"}\n', ids)
 
 
+def moved(cursors):
+    """Cursors that moved past captured events (not the start markers prepare writes)."""
+    return {t: c for t, c in cursors.items() if not c.get("baseline")}
+
+
 class RunTest(unittest.TestCase):
     """A run over fake Chromeria and Observer records, driven like the thread drives it."""
 
@@ -119,7 +124,9 @@ class RunTest(unittest.TestCase):
         self.U, self.W, self.B, self.R = U, W, B, R
         threads = [{"id": "P", "created_by": "user"}, {"id": U, "created_by": "user", "title": "Main"},
                    {"id": W, "parent": "P", "title": "Fix the db"}, {"id": B, "parent": "P", "title": "Big job"},
-                   {"id": R, "parent": "P", "title": "Still going"}]
+                   {"id": R, "parent": "P", "title": "Still going", "run": ("2026-10-10T13:00:00Z", None)},
+                   {"id": f"{DT}stale-item-1", "parent": "P", "title": "Done long ago",
+                    "run": ("2026-10-10T14:00:00Z", "2026-10-10T15:00:00Z")}]
         threads += [{"id": f"{DT}final-v3-a-{i}", "parent": "P"} for i in range(4)]
         threads += [{"id": f"{DT}contextmd-capture-old-s000-judge-1", "parent": "P"}]
         threads += [{"id": f"{DT}contextmd-capture-child-{n}", "parent": "P",
@@ -140,6 +147,9 @@ class RunTest(unittest.TestCase):
         its += [item(R, 1, "2026-10-10T13:00:00Z", "assistant_message", text="first"),
                 item(R, 2, "2026-10-10T13:05:00Z", "assistant_message", status="running", text="half a sen"),
                 item(R, 3, "2026-10-10T13:10:00Z", "assistant_message", text="later")]
+        its += [item(f"{DT}stale-item-1", 1, "2026-10-10T14:00:00Z", "assistant_message", text="one"),
+                item(f"{DT}stale-item-1", 2, "2026-10-10T14:05:00Z", "subagent", status="running", title="left behind"),
+                item(f"{DT}stale-item-1", 3, "2026-10-10T14:10:00Z", "assistant_message", text="three")]
         its += [item(f"{DT}final-v3-a-{i}", 1, "2026-10-10T12:00:00Z", "assistant_message", text="label")
                 for i in range(4)]
         its += [item(f"{DT}contextmd-capture-old-s000-judge-1", 1, "2026-10-10T12:00:00Z",
@@ -151,6 +161,8 @@ class RunTest(unittest.TestCase):
             {"thread": W, "key": "codex:w", "native": "w", "events": [(21, "y", epoch("2026-10-10T10:06:00Z"))]},
             {"thread": B, "key": "codex:b", "native": "b", "events": [(31, "z", epoch("2026-10-10T11:30:00Z"))]},
             {"thread": R, "key": "codex:r", "native": "r", "events": [(41, "q", epoch("2026-10-10T13:00:00Z"))]},
+            {"thread": f"{DT}stale-item-1", "key": "codex:s", "native": "s",
+             "events": [(51, "q_1", epoch("2026-10-10T14:00:00Z"))]},
         ] + [{"thread": f"{DT}contextmd-capture-child-{n}", "key": f"codex:c{n}", "native": f"c{n}",
               "responses": [("gpt-6.1-sol-2026", 1000)]} for n in range(3)])
         self.cfg = dict(config.DEFAULTS, machine="m1", state_dir=str(self.tmp / "state"),
@@ -346,6 +358,20 @@ class RunTest(unittest.TestCase):
         self.assertIn({"job": f"{seg}-extract-sol", "task_id": "t", "output": "run-failed"},
                       self.cap.next_jobs()["invalid"])
 
+    def test_leftover_running_item_in_a_finished_thread_does_not_block_it(self):
+        run = self.prepare()
+        tid = f"{DT}stale-item-1"
+        self.assertNotIn("held_back", run["threads"][tid])
+        seg = next(s for s in run["segments"] if s["thread"] == tid)
+        self.assertEqual(seg["last"]["ordinal"], 3)
+
+    def test_native_id_match_is_literal(self):
+        ref = observer.anchor(self.ao, "codex:s", native_id="qx1", kind="call", text=None,
+                              ts="2026-10-10T14:00:00Z")
+        self.assertEqual(ref["anchor"], "next")  # "q_1" must not match "qx1" as a LIKE pattern
+        self.assertEqual(observer.anchor(self.ao, "codex:s", native_id="q_1", kind="call", text=None,
+                                         ts="2026-10-10T14:00:00Z")["anchor"], "exact")
+
     def test_items_still_being_written_are_held_back(self):
         run = self.prepare()
         seg = next(s for s in run["segments"] if s["thread"] == self.R)
@@ -367,8 +393,9 @@ class RunTest(unittest.TestCase):
         seg = next(s for s in self.cap.load()["segments"] if s["id"] == wseg)
         self.assertFalse(seg["committed"])
         self.assertIn("no Observer event", seg["error"])
-        self.assertNotIn(self.W, self.cap.store.cursors())
+        self.assertNotIn(self.W, moved(self.cap.store.cursors()))
         self.assertTrue(all(i["moment"]["observer"] for i in self.cap.store.queued()))
+        self.assertIn(wseg, result["errors"])
         self.ao.execute("INSERT INTO events VALUES(?,?,?,?,?)", (22, "codex:w", epoch("2026-10-10T10:06:00Z"),
                                                                    "tool_call", "y"))
         self.assertEqual(self.cap.commit()["state"], "complete")
@@ -386,13 +413,38 @@ class RunTest(unittest.TestCase):
         self.assertEqual(seg_rec["items"], 0)
         self.assertEqual(self.cap.store.cursors()[self.W]["ordinal"], 2)
 
-    def test_abandon_closes_the_run_without_moving_open_cursors(self):
+    def test_abandoned_first_capture_is_retried_by_a_later_window(self):
         run = self.prepare()
         out = self.cap.abandon("stuck job")
         self.assertIsNone(self.cap.store.active_run())
         self.assertEqual(len(out["open_segments"]), len(run["segments"]))
-        self.assertEqual(self.cap.store.cursors(), {})
-        self.prepare()  # a new run can start
+        self.assertEqual(moved(self.cap.store.cursors()), {})
+        # The next day's run starts each thread where the abandoned run started it.
+        later = self.cap.prepare("2026-10-11T00:00:00Z", "2026-10-12T00:00:00Z")
+        useg = next(s for s in later["segments"] if s["thread"] == self.U)
+        text = (self.cap.store.runs / later["run_id"] / "seg" / useg["id"] / "transcript.txt").read_text()
+        self.assertIn("never use rm -rf", text.split("## EVENTS")[-1])
+        self.assertIn("tomorrow", text)
+
+    def test_recapture_after_abandon_never_replaces_another_runs_lesson(self):
+        run = self.prepare()
+        useg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
+        self.dispatch_all("extract")
+        self.finish_segment(run, useg)
+        self.cap.commit()
+        first = [i for i in self.cap.store.queued() if i["key"]["thread"] == self.U]
+        self.cap.abandon("rest stuck")
+        self.cap.store.set_cursor(self.U, {"ordinal": 1, "baseline": True})  # as if U had not committed
+        run2 = self.prepare()
+        seg2 = next(s for s in run2["segments"] if s["thread"] == self.U)["id"]
+        self.dispatch_all("extract")
+        self.finish_segment(run2, seg2)
+        self.cap.commit()
+        mine = [i for i in self.cap.store.queued() if i["key"]["thread"] == self.U]
+        self.assertEqual(len(mine), 2)
+        self.assertEqual(sorted(i["key"]["index"] for i in mine), [0, 1])
+        self.assertEqual({i["run"]["run_id"] for i in mine}, {run["run_id"], run2["run_id"]})
+        self.assertEqual(len(first), 1)
 
     def test_report_counts_match_the_queue(self):
         run = self.prepare()
@@ -404,6 +456,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(r["steps"]["lessons"], len(run["segments"]))
         self.assertEqual(r["steps"]["keep_found_by"], {"grok+sol": len(run["segments"])})
         self.assertEqual(r["steps"]["threads_skipped"], {"skipped:worker-batch": 4, "skipped:capture": 1})
+        self.assertEqual(r["steps"]["threads_held_back"], 1)
         self.assertEqual(r["cost"]["sol"]["observed_models"], {"gpt-6.1-sol-2026": len(run["segments"])})
 
     def test_cursor_moves_only_past_leading_committed_segments(self):
@@ -412,7 +465,7 @@ class RunTest(unittest.TestCase):
         self.dispatch_all("extract")
         self.finish_segment(run, big[1])  # second segment ready, first not
         self.cap.commit()
-        self.assertNotIn(self.B, self.cap.store.cursors())
+        self.assertNotIn(self.B, moved(self.cap.store.cursors()))
         self.assertIsNotNone(self.cap.store.active_run())
         self.finish_segment(run, big[0])
         self.cap.commit()
@@ -433,7 +486,7 @@ class RunTest(unittest.TestCase):
         with self.assertRaises(observer.SyncFailed):
             self.new(sync=fail).commit()
         self.assertEqual(self.cap.store.queued(), [])
-        self.assertEqual(self.cap.store.cursors(), {})
+        self.assertEqual(moved(self.cap.store.cursors()), {})
 
     def test_one_run_at_a_time(self):
         self.prepare()
@@ -456,6 +509,16 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self.cap.store.queued(), [])
         self.assertEqual(self.cap.store.cursors(), {})
         self.assertEqual(len(list((self.cap.store.runs / run["run_id"] / "items").glob("*.json"))), 1)
+
+
+class CliLockTest(unittest.TestCase):
+    def test_report_waits_for_no_one_and_fails_while_locked(self):
+        from contextmd import cli
+        d = Path(tempfile.mkdtemp())
+        cfg = d / "c.json"
+        cfg.write_text(json.dumps({"state_dir": str(d / "state")}))
+        with Store(d / "state").locked():
+            self.assertEqual(cli.main(["--config", str(cfg), "capture", "report"]), 1)
 
 
 class SyncGateTest(unittest.TestCase):
