@@ -46,7 +46,7 @@ class Entry:
     def matches(self, keys: Keys) -> str | None:
         """The first key of this entry that matches, as ``kind:value``, else None."""
         for prefix in self.commands:
-            if any(seg[:len(prefix)] == prefix for seg in keys.commands):
+            if keys.has_command(prefix):
                 return "command:" + " ".join(prefix)
         for pattern in self.paths:
             rx = glob_regex(pattern)

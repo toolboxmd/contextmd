@@ -21,12 +21,13 @@ must-know-before: true
 Answer every prompt of the PR template before opening a PR.
 ```
 
-- `command` matches a command prefix in any shell segment. The command is
-  split on unquoted `&`, `|`, `;`, newlines and subshells; quoted text is
-  always an argument, and `$(...)` or backtick substitutions, also inside
-  double quotes, are segments of their own. Heredoc bodies, leading
-  `cd <dir>`, `env` and `NAME=value` are ignored, and the executable is reduced
-  to its basename.
+- `command` matches wherever its words appear in that order in the shell
+  command. The command is not parsed: it is cut into words at whitespace,
+  quotes, backslashes and shell punctuation, so the key also matches inside
+  quotes, heredocs, `bash -c` strings and substitutions, and `cd` or `env`
+  before it does not matter. The first word may be an executable path
+  (`/usr/bin/gh`). Words that only appear as data also match; that rare false
+  hit costs one extra model round and still delivers the rule.
 - `path` is a glob on the repository-relative path of a file tool (`**` spans
   directories).
 - `error` matches a substring of a failed tool's error, compared lowercase with
@@ -59,7 +60,7 @@ loaded, and per entry its lane, id, version, outcome and remote status.
 | `delivery_failed` | Writing the output failed; budget, dedupe and deny-once are released. |
 | `delivery_unverified` | The hook process ended before settling; the next moment after 10 seconds releases the reservation. |
 | `selected` | Matched before a tool call; served at the tool result. |
-| `deduped` | Already served this turn, or its deny was already used this session. |
+| `deduped` | Already delivered this turn, or its deny was already delivered this session. Only settled serves count, so an unfinished reservation never suppresses a deny. |
 | `cut_budget` | Did not fit the turn budget (`cut: turn`) or the per-output limit (`cut: moment`). |
 | `unsupported_key` | The tool input had a shape the exact-key lane cannot read. |
 | `not_on_machine` | A session-start file is missing. |

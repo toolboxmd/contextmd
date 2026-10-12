@@ -8,6 +8,9 @@ and a second transaction settles the reservation: ``injected`` once the output
 is written, ``delivery_failed`` with the budget, dedupe and deny-once released
 when writing fails. A reservation whose process died before settling is
 released as ``delivery_unverified`` by the next moment after ``STALE_SECONDS``.
+Dedupe and deny-once count only settled serves, so an unsettled reservation
+never suppresses a later deny: concurrent calls may each deny, which fails
+toward the rule being read.
 
 Rules (Spec #3, Issue #11):
 
@@ -62,9 +65,9 @@ CREATE TABLE IF NOT EXISTS sessions (host TEXT, session TEXT, epoch INTEGER, tur
 CREATE TABLE IF NOT EXISTS turns (host TEXT, session TEXT, turn INTEGER, used INTEGER,
     PRIMARY KEY (host, session, turn));
 CREATE TABLE IF NOT EXISTS served (host TEXT, session TEXT, turn INTEGER, entry TEXT, version TEXT,
-    seq INTEGER, PRIMARY KEY (host, session, turn, entry, version));
+    seq INTEGER, settled INTEGER DEFAULT 0, PRIMARY KEY (host, session, turn, entry, version, seq));
 CREATE TABLE IF NOT EXISTS denied (host TEXT, session TEXT, entry TEXT, version TEXT, seq INTEGER,
-    PRIMARY KEY (host, session, entry, version));
+    settled INTEGER DEFAULT 0, PRIMARY KEY (host, session, entry, version, seq));
 CREATE TABLE IF NOT EXISTS moments (seq INTEGER PRIMARY KEY, record TEXT);
 CREATE TABLE IF NOT EXISTS pending (seq INTEGER PRIMARY KEY, host TEXT, session TEXT, turn INTEGER,
     chars INTEGER, created REAL);
@@ -159,7 +162,10 @@ class Serving:
         row = self.db.execute("SELECT host, session, turn, chars FROM pending WHERE seq=?", (seq,)).fetchone()
         if row is None:
             return  # nothing pending, or already released as stale
-        if outcome != "injected":
+        if outcome == "injected":
+            self.db.execute("UPDATE served SET settled=1 WHERE seq=?", (seq,))
+            self.db.execute("UPDATE denied SET settled=1 WHERE seq=?", (seq,))
+        else:
             host, session, turn, chars = row
             self.db.execute("DELETE FROM served WHERE seq=?", (seq,))
             self.db.execute("DELETE FROM denied WHERE seq=?", (seq,))
@@ -205,16 +211,16 @@ class Serving:
 
     def _served(self, m: Moment, turn: int, e) -> bool:
         return self.db.execute(
-            "SELECT 1 FROM served WHERE host=? AND session=? AND turn=? AND entry=? AND version=?",
+            "SELECT 1 FROM served WHERE host=? AND session=? AND turn=? AND entry=? AND version=? AND settled=1",
             (m.host, m.session, turn, e.id, e.version)).fetchone() is not None
 
     def _mark_served(self, m: Moment, turn: int, e) -> None:
-        self.db.execute("INSERT OR IGNORE INTO served VALUES (?, ?, ?, ?, ?, ?)",
+        self.db.execute("INSERT INTO served (host, session, turn, entry, version, seq) VALUES (?, ?, ?, ?, ?, ?)",
                         (m.host, m.session, turn, e.id, e.version, self.seq))
 
     def _denied(self, m: Moment, e) -> bool:
         return self.db.execute(
-            "SELECT 1 FROM denied WHERE host=? AND session=? AND entry=? AND version=?",
+            "SELECT 1 FROM denied WHERE host=? AND session=? AND entry=? AND version=? AND settled=1",
             (m.host, m.session, e.id, e.version)).fetchone() is not None
 
     # -- moments ----------------------------------------------------------
@@ -317,7 +323,7 @@ class Serving:
             elif self._denied(m, e) or self._served(m, turn, e):
                 self._serve(record, e, key, "deduped")
             elif fits(e, record, key):
-                self.db.execute("INSERT INTO denied VALUES (?, ?, ?, ?, ?)",
+                self.db.execute("INSERT INTO denied (host, session, entry, version, seq) VALUES (?, ?, ?, ?, ?)",
                                 (m.host, m.session, e.id, e.version, self.seq))
         out = text()
         return Deny(out) if out else Nothing()

@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -25,51 +26,18 @@ def entry(directory, name, body, **fields):
 
 
 class SegmentsTest(unittest.TestCase):
-    def cmds(self, command):
-        return [" ".join(s) for s in keys.segments(command)]
-
-    def test_splits_on_shell_separators(self):
-        self.assertEqual(self.cmds("make && gh pr create; git status | head -1\nls"),
-                         ["make", "gh pr create", "git status", "head -1", "ls"])
-
-    def test_ignores_leading_cd_and_env(self):
-        self.assertEqual(self.cmds("cd ~/repo && env A=1 B=2 /usr/bin/git commit -m x"),
-                         ["git commit -m x"])
-        self.assertEqual(self.cmds("FOO=bar gh issue create"), ["gh issue create"])
-
-    def test_quoted_separators_and_heredoc_bodies_are_data(self):
-        self.assertEqual(self.cmds('echo "a && gh pr create"'), ["echo a && gh pr create"])
-        self.assertEqual(self.cmds("cat <<'EOF' > f\ngh pr create\nEOF\ngit push"),
-                         ["cat <<HEREDOC > f", "git push"])
-        self.assertEqual(self.cmds("cat <<EOF | gh pr create --body-file -\nbody\nEOF"),
-                         ["cat <<HEREDOC", "gh pr create --body-file -"])
-
-    def test_subshells_are_segments(self):
-        self.assertEqual(self.cmds("echo $(gh pr list) x"), ["echo $() x", "gh pr list"])
-
-    def test_adjacent_operators_and_blank_lines_split(self):
-        self.assertEqual(self.cmds("echo ok &&\ngh pr create"), ["echo ok", "gh pr create"])
-        self.assertEqual(self.cmds("echo ok\n\ngh pr create"), ["echo ok", "gh pr create"])
-        self.assertEqual(self.cmds("make;\n  gh pr create || true"), ["make", "gh pr create", "true"])
-        self.assertEqual(self.cmds("echo a \\\n  b && git push"), ["echo a b", "git push"])
-
-    def test_quoted_punctuation_is_an_argument(self):
-        self.assertEqual(self.cmds("printf '%s' ';' gh pr create"), ["printf %s ; gh pr create"])
-        self.assertEqual(self.cmds('echo "&&" gh pr create'), ["echo && gh pr create"])
-        self.assertEqual(self.cmds("echo \\; gh pr create"), ["echo ; gh pr create"])
-
-    def test_redirections_stay_in_their_segment(self):
-        self.assertEqual(self.cmds("make 2>&1 | tee log"), ["make 2>&1", "tee log"])
-
-    def test_command_substitution_in_double_quotes_is_a_command(self):
-        self.assertEqual(self.cmds('echo "url: $(gh pr create --fill)"'),
-                         ["echo url: $()", "gh pr create --fill"])
-        self.assertEqual(self.cmds('echo "`gh pr create`"'), ["echo ``", "gh pr create"])
-        self.assertEqual(self.cmds("echo '$(gh pr create)'"), ["echo $(gh pr create)"])
-
-    def test_unbalanced_quote_is_unsupported(self):
-        with self.assertRaises(keys.Unsupported):
-            keys.segments('echo "open')
+    def test_command_key_matches_words_anywhere(self):
+        def hit(command, key="gh pr create"):
+            e = store.Entry("e", "v", "t", commands=[key.split()])
+            return e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+        for command in ["gh pr create", "cd x && env A=1 /usr/local/bin/gh pr create --fill",
+                        "echo ok &&\ngh pr create", "printf '%s' '>'&gh pr create",
+                        "printf '%s' \\>&gh pr create", "printf '%s\\n' '<<EOF'\ngh pr create\nEOF",
+                        'bash -c "gh pr create"', 'echo "$(gh pr create)"', "x=`gh pr create`",
+                        "{ gh pr create; }", "printf '%s' ';' gh pr create"]:
+            self.assertTrue(hit(command), command)
+        for command in ["gh pr list", "gh issue create", "ghx pr create", "echo gh pr", "gh pr createx"]:
+            self.assertFalse(hit(command), command)
 
     def test_glob(self):
         rx = keys.glob_regex("**/SKILL.md")
@@ -216,7 +184,7 @@ class HookSeamTest(unittest.TestCase):
         entry(self.keys_dir, "pr", "Rule text.", command="gh pr create", must_know_before="true")
         self.fire("UserPromptSubmit", prompt="SECRET-PROMPT")
         self.bash("PreToolUse", "gh pr create --body SECRET-BODY", 1)
-        self.bash("PreToolUse", "echo 'SECRET-OPEN", 2)
+        self.fire("PreToolUse", tool_name="mcp__x__y", tool_input={"q": "SECRET-ARG"}, tool_use_id="t2")
         self.fire("Stop", stop_hook_active=False)
         raw = self.run_cli("log").stdout
         self.assertNotIn("SECRET", raw)
@@ -252,13 +220,42 @@ class HookSeamTest(unittest.TestCase):
         self.run_cli("on")
         self.assertEqual(self.bash("PreToolUse", "gh pr create", 2)["permissionDecision"], "deny")
 
-    def test_multiline_command_is_denied(self):
+    def test_hidden_commands_are_denied(self):
         entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
-        self.assertEqual(self.bash("PreToolUse", "echo ok &&\ngh pr create", 1)["permissionDecision"], "deny")
+        for n, command in enumerate(["echo ok &&\ngh pr create", "printf '%s' '>'&gh pr create",
+                                     "printf '%s' \\>&gh pr create",
+                                     "printf '%s\\n' '<<EOF'\ngh pr create\nEOF"]):
+            self.session = f"hidden{n}"
+            out = self.bash("PreToolUse", command, n)
+            self.assertEqual(out and out["permissionDecision"], "deny", command)
 
-    def test_printing_punctuation_neither_denies_nor_spends_the_deny(self):
+    def test_killed_hook_does_not_spend_the_deny(self):
         entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
-        self.assertIsNone(self.bash("PreToolUse", "printf '%s' ';' gh pr create", 1))
+        ev = {"hook_event_name": "PreToolUse", "session_id": self.session, "cwd": str(self.repo),
+              "tool_name": "Bash", "tool_input": {"command": "gh pr create"}, "tool_use_id": "t1"}
+        env = dict(os.environ, CONTEXTMD_SERVING_CONFIG=str(self.cfg))
+        r, w = os.pipe()
+        os.set_blocking(w, False)
+        try:
+            while True:
+                os.write(w, b"x" * 65536)
+        except BlockingIOError:
+            pass
+        os.set_blocking(w, True)
+        # The hook reserves, then blocks writing to the full pipe; the host kills it.
+        p = subprocess.Popen([sys.executable, "-I", str(BIN), "hook", "claude-code"], stdin=subprocess.PIPE,
+                             stdout=w, stderr=subprocess.DEVNULL, env=env)
+        p.stdin.write(json.dumps(ev).encode())
+        p.stdin.close()
+        for _ in range(100):
+            if (self.state / "serving.db").exists() and any(
+                    s["outcome"] == "pending" for r_ in self.log() for s in r_["serves"]):
+                break
+            time.sleep(0.05)
+        p.kill()
+        p.wait()
+        os.close(w)
+        os.close(r)
         self.assertEqual(self.bash("PreToolUse", "gh pr create", 2)["permissionDecision"], "deny")
 
     def test_failed_output_releases_the_deny(self):
