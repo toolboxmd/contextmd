@@ -123,7 +123,7 @@ class Capture:
             return run
 
     def replay(self, from_run: str, segment_ids: list[str], experiment: str,
-               extract_prompt: str = "extract.md") -> dict:
+               extract_prompt: str = "extract.md", reuse_extracts: bool = False) -> dict:
         """An experiment run over exact segment transcripts of an earlier run.
 
         Prompt comparisons need the same input, so the transcripts and line maps
@@ -145,6 +145,10 @@ class Capture:
                 to.mkdir(parents=True, exist_ok=True)
                 for name in ("transcript.txt", "lines.json"):
                     shutil.copyfile(self._run_dir(from_run) / "seg" / sid / name, to / name)
+                if reuse_extracts:  # judge-only: the source run's finished extractor outputs
+                    for ext in self.cfg["extractors"]:
+                        job = src["jobs"][f"{sid}-extract-{ext}"]
+                        shutil.copyfile(self._paths(src, job)["output"], to / f"extract-{ext}.md")
                 segments.append({**{k: seg[k] for k in ("id", "thread", "chars", "last")},
                                  "committed": False, "source": {"run": from_run, "segment": sid}})
                 threads.setdefault(seg["thread"], {**src["threads"][seg["thread"]], "segments": []})
@@ -154,6 +158,13 @@ class Capture:
                    "replay_of": from_run, "targets": {"extractors": self.cfg["extractors"],
                                                       "judge": self.cfg["judge"]},
                    "threads": threads, "segments": segments, "jobs": self._jobs(segments), "state": "open"}
+            if reuse_extracts:
+                for sid in segment_ids:
+                    for ext in self.cfg["extractors"]:
+                        done = [a for a in src["jobs"][f"{sid}-extract-{ext}"]["attempts"]
+                                if a.get("status") != "failed"]
+                        run["jobs"][f"{sid}-extract-{ext}"]["attempts"] = [{**done[-1], "reused_from": from_run}]
+                extract_prompt = src.get("prompts", {}).get("extract", "extract-v1.md")
             self._set_prompts(run, extract_prompt)
             self.save(run)
             self.store.set_active_run(run_id)

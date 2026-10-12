@@ -574,6 +574,19 @@ class RunTest(unittest.TestCase):
         self.assertEqual(len(self.cap.store.queued()), before)
         self.assertEqual(len(list((self.cap.store.runs / rep["run_id"] / "items").glob("*.json"))), 1)
 
+    def test_replay_can_rerun_only_the_judge_on_the_same_extracts(self):
+        run = self.prepare()
+        self.dispatch_all("extract")
+        for s_ in run["segments"]:
+            self.finish_segment(run, s_["id"])
+        self.cap.commit()
+        seg = run["segments"][0]["id"]
+        rep = self.cap.replay(run["run_id"], [seg], "rejudge", reuse_extracts=True)
+        self.assertEqual(rep["contracts"]["judge"], "judge-v2")
+        src = (self.cap.store.runs / run["run_id"] / "seg" / seg / "extract-sol.md").read_text()
+        self.assertEqual((self.cap.store.runs / rep["run_id"] / "seg" / seg / "extract-sol.md").read_text(), src)
+        self.assertEqual([j["job"] for j in self.cap.next_jobs()["due"]], [f"{seg}-judge"])
+
     def test_dedupe_merges_found_by_across_segments(self):
         run = self.prepare()
         big = [s_["id"] for s_ in run["segments"] if s_["thread"] == self.B][:2]

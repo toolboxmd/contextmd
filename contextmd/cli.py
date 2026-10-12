@@ -56,6 +56,8 @@ def main(argv=None) -> int:
     rp2.add_argument("--segment", action="append", required=True)
     rp2.add_argument("--experiment", required=True)
     rp2.add_argument("--extract-prompt", default="extract.md", help="prompt file under prompts/capture/")
+    rp2.add_argument("--reuse-extracts", action="store_true",
+                     help="copy the source run's extractor outputs; only the judge runs again")
     ns = ap.parse_args(argv)
     cfg = config.load(ns.config)
     cap_ = Capture(cfg)
@@ -82,7 +84,7 @@ def main(argv=None) -> int:
         elif ns.cmd == "abandon":
             out = cap_.abandon(ns.reason)
         elif ns.cmd == "replay":
-            run = cap_.replay(ns.from_run, ns.segment, ns.experiment, ns.extract_prompt)
+            run = cap_.replay(ns.from_run, ns.segment, ns.experiment, ns.extract_prompt, ns.reuse_extracts)
             out = {"run_id": run["run_id"], "segments": len(run["segments"]), "jobs": len(run["jobs"]),
                    "contracts": run["contracts"]}
     except (RunError, Busy, observer.SyncFailed) as exc:
