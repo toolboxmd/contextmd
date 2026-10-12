@@ -1,7 +1,7 @@
 # ContextMD Glossary
 
 Terms only ContextMD uses. Terms shared across the user's system, such as
-capture, write step, moment, owner, Cue (intent detector), harness, session,
+capture, lesson, write step, moment, owner, Cue (intent detector), harness, session,
 turn, machine, correction, policy denial and recurring problem, are defined
 once in Chromeria's system glossary,
 [`toolboxmd/chromeria` `GLOSSARY.md`](https://github.com/toolboxmd/chromeria/blob/main/GLOSSARY.md).
@@ -9,12 +9,14 @@ once in Chromeria's system glossary,
 ## Serving
 
 **Entry**:
-One Markdown file in a store that ContextMD can serve: its keys and a body.
+One Markdown file in an entry directory that ContextMD can serve: its keys and
+a body.
 Its version is a hash of the file, so an edited entry counts as new.
 
 **Matcher**:
 How an entry is found at a moment: `exact_key`, `retrieval` or `intent`
-(Cue).
+(Cue). Session-start files are served without a matcher; serve logs record
+them as `session_start`.
 _Avoid_: lane
 
 **Exact key**:
@@ -70,13 +72,14 @@ contract.
 **Item**:
 One candidate lesson from an extractor, citing the event it comes from.
 
-**Judge**:
+**Capture judge**:
 The model that pairs both extractors' items blind and grades each `keep`,
 `state`, `junk` or `defect`.
+_Avoid_: judge (alone)
 
 **Ruling**:
-The user's label on an item the judge or extractors disagree about, used to
-calibrate the judge.
+The user's label on an item the capture judge or extractors disagree about,
+used to calibrate the capture judge.
 
 **Inbox**:
 Where judged items wait between capture and the write step: first on the
