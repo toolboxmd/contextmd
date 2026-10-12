@@ -1,4 +1,4 @@
-<!-- contract: judge-v1 -->
+<!-- contract: judge-v2 -->
 # Judge: pair and grade two lists of captured items from one agent session
 
 Two extractors read the same part of one past AI agent session and wrote items meant to help future agent sessions. You see their lists as A and B. You do not know which extractor wrote which list; do not guess.
@@ -14,9 +14,17 @@ Group items that state the same lesson (same rule, fact or recipe, even in other
 
 ## Grade each group
 
+First apply these checks in order. The first one that matches decides the grade, even if the item would be useful:
+
+1. It restates a procedure or rule that already exists (in the session's instructions, a loaded skill or project rules, a brief, or a parent's message), and the session does not show that rule failing or the user correcting it: `junk`.
+2. A tool already enforces it or shows it every time (a hook that blocks, a check that fails loudly, an error message that says what to do): `junk`.
+3. It is true only for this task, draft or loop round: progress, a run's results, counts, scores, a choice made for this task only, what was built, sent or merged: `state`. If it also holds a lasting rule, judge that rule instead.
+4. It is one-off trivia that will not recur: `junk`.
+
+Otherwise:
+
 - `keep`: it would change what a future agent does on a later task, and for the better. A lasting rule, preference, decision, fact about a tool, machine, repo or model, a gotcha, or a working recipe. It must still be true after this task ends.
-- `state`: true only for this task, draft or loop round: progress, results of a run, counts, scores, what was built, sent or merged. If it also holds a lasting rule, grade `keep`.
-- `junk`: anything else: generic advice any agent follows, a restatement of a rule, procedure or brief the session already had loaded or was given (unless the session shows it failing or the user correcting it), something a tool already enforces or shows every time, one-off trivia, or anything the transcript does not support.
+- `junk`: generic advice any agent already follows, or anything the transcript does not support.
 
 Also give:
 
