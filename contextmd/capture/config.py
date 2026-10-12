@@ -33,6 +33,9 @@ DEFAULTS = {
     # Rendered characters of the next segment shown at the end of a segment as
     # ordinary events, so segments overlap instead of cutting a lesson in two.
     "overlap_chars": 12000,
+    # Rendered characters of later events after that, shown read-only so the
+    # outcome of a noticed problem is visible.
+    "following_chars": 40000,
     "batch_min_siblings": 4,
     # clientRequestId prefix of capture's own delegated jobs; those threads are skipped.
     "own_task_prefix": "contextmd-capture-",

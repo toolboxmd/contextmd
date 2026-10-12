@@ -149,13 +149,15 @@ def head(lines: list[Line], max_chars: int) -> list[Line]:
 
 
 def document(header: str, context: list[Line], body: list[Line],
-             lookahead: list[Line] = ()) -> tuple[str, dict[int, Line], set[int]]:
+             lookahead: list[Line] = (), following: list[Line] = ()) -> tuple[str, dict[int, Line], set[int]]:
     """The transcript file text, line number -> Line for extractable lines, and
     the numbers of lookahead lines.
 
     Segments overlap: ``lookahead`` is the start of the next segment, shown as
     ordinary events so a lesson that runs across the cut is seen whole. The
-    next segment owns those lines, so a lesson citing one is left to it.
+    next segment owns those lines; a lesson citing only them is still kept.
+    ``following`` are later events after the overlap, shown read-only so the
+    outcome of a problem (fixed, by what, or still open) can be seen.
     Context lines are numbered too, but they are outside this capture and are
     not in the returned map, so an item citing one is anchored to the segment
     start.
@@ -174,4 +176,10 @@ def document(header: str, context: list[Line], body: list[Line],
         numbered[n] = line
         parts.append(line.render(n))
     ahead = set(range(n - len(lookahead) + 1, n + 1)) if lookahead else set()
+    if following:
+        parts.append("## FOLLOWING (later events, outside this capture: read to learn what happened next, "
+                     "do not extract from these lines)")
+        for line in following:
+            n += 1
+            parts.append(line.render(n))
     return "\n".join(parts) + "\n", numbered, ahead

@@ -243,13 +243,19 @@ class Capture:
             entry["status"] = "captured"
             entry["events"] = len(fresh)
             cuts = transcript.segments(body_lines, max_chars)
+            # Later events, inside or after the window, for the read-only FOLLOWING section.
+            last_fresh = max(it.ordinal for it in fresh)
+            later = transcript.render([it for it in all_items if it.ordinal > last_fresh
+                                       and it.status not in chromeria.UNFINISHED])
             for i, seg_lines in enumerate(cuts):
                 seg_id = f"s{len(segments):03d}"
                 ctx = transcript.context_before(context, cfg["context_chars"])
                 ahead = transcript.head(cuts[i + 1], cfg["overlap_chars"]) if i + 1 < len(cuts) else []
+                rest = [l for c in cuts[i + 1:] for l in c][len(ahead):] + later
+                follow = transcript.head(rest, cfg.get("following_chars", 0))
                 header = (f"# session {tid} | agent {entry['provider']}/{entry['model']} | kind {kind}"
                           f" | machine {cfg['machine']} | title {entry['title']} | segment {seg_id}")
-                text, numbered, lookahead = transcript.document(header, ctx, seg_lines, ahead)
+                text, numbered, lookahead = transcript.document(header, ctx, seg_lines, ahead, follow)
                 sdir = rdir / "seg" / seg_id
                 sdir.mkdir(parents=True, exist_ok=True)
                 (sdir / "transcript.txt").write_text(text, encoding="utf-8")
@@ -612,6 +618,8 @@ class Capture:
                 "learned_from": lesson["learned_from"],
                 "extractor_learned_from": items_mod.learned(item.get("learned_from")),
                 "grade": lesson["grade"], "unsupported": lesson["unsupported"],
+                "outcome": lesson.get("outcome") or item.get("outcome"),
+                "defect_owner": lesson.get("owner") if lesson["grade"] == "defect" else None,
                 "judge_reason": lesson["reason"], "members": lesson["members"],
                 "models": models,
                 "run": {"run_id": run["run_id"], "segment": seg["id"], "contracts": run["contracts"]},

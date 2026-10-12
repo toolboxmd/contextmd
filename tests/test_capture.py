@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from contextmd.capture import compare, config, dedupe, items, kinds, observer, report, transcript  # noqa: E402
 from contextmd.capture.chromeria import Item, Thread  # noqa: E402
-from contextmd.capture.run import Capture, RunError  # noqa: E402
+from contextmd.capture.run import Capture, RunError, _contract  # noqa: E402
 from contextmd.capture.store import Busy, Store  # noqa: E402
 from tests.fixtures import chromeria_db, observer_db  # noqa: E402
 
@@ -95,6 +95,15 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(items.parse_extract("NO ITEMS"), [])
         with self.assertRaises(items.InvalidOutput):
             items.parse_extract("I could not read the file.")
+
+    def test_defect_grade_and_outcomes_are_carried(self):
+        got = items.parse_extract(md(("broken setting", 3, "failure")) + "**Outcome:** still open at the end\n")
+        self.assertEqual(got[0]["outcome"], "still open at the end")
+        ids = {"A01": ("sol", 0), "B01": ("grok", 0)}
+        g = items.parse_judge('{"a":["A01"],"b":["B01"],"grade":"defect","learned_from":"failure",'
+                              '"outcome":"not fixed","owner":"toolboxmd/x"}\n', ids)
+        m = items.merge(g, ids, {"sol": got, "grok": [{"t": 1}]})
+        self.assertEqual((m[0]["grade"], m[0]["outcome"], m[0]["owner"]), ("defect", "not fixed", "toolboxmd/x"))
 
     def test_judge_must_cover_every_id_exactly_once(self):
         ids = {"A01": ("sol", 0), "B01": ("grok", 0), "B02": ("grok", 1)}
@@ -220,7 +229,10 @@ class RunTest(unittest.TestCase):
         text = (self.cap.store.runs / run["run_id"] / "seg" / seg["id"] / "transcript.txt").read_text()
         self.assertIn("old question", text.split("## EVENTS")[0])
         self.assertIn("never use rm -rf", text.split("## EVENTS")[1])
-        self.assertNotIn("tomorrow", text)
+        # Later events are shown only read-only, after the extractable lines.
+        self.assertIn("tomorrow", text.split("## FOLLOWING")[1])
+        self.assertNotIn("tomorrow", text.split("## FOLLOWING")[0])
+        self.assertNotIn("tomorrow", json.dumps(self.lines(run, seg["id"])))
         self.assertEqual(seg["last"]["ordinal"], 4)
         big = [s for s in run["segments"] if s["thread"] == self.B]
         self.assertGreater(len(big), 1)
@@ -235,7 +247,7 @@ class RunTest(unittest.TestCase):
         self.assertTrue(sol["clientRequestId"].startswith("contextmd-capture-"))
         brief = Path(sol["task"].split("brief at ", 1)[1].split(" and do", 1)[0]).read_text()
         self.assertIn(sol["output"], brief)
-        self.assertIn("contract: extract-v2", brief)
+        self.assertIn(f"contract: {_contract('extract.md')}", brief)
         self.dispatch_all("extract")
         useg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
         for s in run["segments"]:
@@ -426,7 +438,8 @@ class RunTest(unittest.TestCase):
         self.assertTrue(run["threads"][self.R]["held_back"])
         text = (self.cap.store.runs / run["run_id"] / "seg" / seg["id"] / "transcript.txt").read_text()
         self.assertNotIn("half a sen", text)
-        self.assertNotIn("later", text)
+        self.assertNotIn("later", text.split("## FOLLOWING")[0])
+        self.assertEqual([l["item_id"] for l in self.lines(run, seg["id"]).values()], [f"{self.R}-i1"])
 
     def test_lesson_without_observer_anchor_keeps_its_segment_open(self):
         self.ao.execute("DELETE FROM events WHERE session_key='codex:w'")
@@ -582,7 +595,7 @@ class RunTest(unittest.TestCase):
         self.cap.commit()
         seg = run["segments"][0]["id"]
         rep = self.cap.replay(run["run_id"], [seg], "rejudge", reuse_extracts=True)
-        self.assertEqual(rep["contracts"]["judge"], "judge-v2")
+        self.assertEqual(rep["contracts"]["judge"], _contract("judge.md"))
         src = (self.cap.store.runs / run["run_id"] / "seg" / seg / "extract-sol.md").read_text()
         self.assertEqual((self.cap.store.runs / rep["run_id"] / "seg" / seg / "extract-sol.md").read_text(), src)
         self.assertEqual([j["job"] for j in self.cap.next_jobs()["due"]], [f"{seg}-judge"])

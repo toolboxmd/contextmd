@@ -1,4 +1,4 @@
-<!-- contract: extract-v2 -->
+<!-- contract: extract-v3 -->
 # What should future sessions know?
 
 You read part of one past AI agent session between a user and their agents. Decide what in it would help future agent sessions do better work for this user.
@@ -12,13 +12,15 @@ The transcript at `{transcript}`. Each line is `[n] kind timestamp: text`. Kinds
 - `assistant`: the agent's text.
 - `call`, `output`, `error`: a tool call, its clipped output, and output that looks like an error.
 
-Long texts are clipped with `[...]`. If the file has a CONTEXT section, those lines are outside this capture: read them for meaning only, and extract only from the EVENTS section.
+Long texts are clipped with `[...]`. If the file has a CONTEXT section, those lines are outside this capture: read them for meaning only, and extract only from the EVENTS section. A FOLLOWING section, when present, holds later events: read it to learn what happened next, but do not extract from it.
 
 ## What to keep
 
 Keep anything that would make a future agent act differently, and better, on a later task, if it knew it at the right moment. Decide for yourself what kinds of information this session holds. Keep it even if an agent could have looked it up: agents often do not look things up.
 
 Leave out state that will change, such as how far this task got, but keep any lasting rule mentioned in it.
+
+When the session notices a problem (a bug, a defect, a broken setting or behavior), follow the transcript to what happened next. If the problem was fixed, the fix lives in the code or configuration: write an item only for a lasting recipe or gotcha that remains, not for the problem itself. If it is still not fixed at the end of what you can read, write it as an item so it can be reported to whoever owns it.
 
 ## Rules
 
@@ -42,6 +44,7 @@ Write Markdown to `{output}`, then reply only "done". If nothing is worth keepin
 **Learned from:** one of `failure` (something broke and the fix was found), `user` (the person said, corrected or decided it), `discovered` (the agent found it by investigation), `served_or_loaded` (it repeats a rule or memory already in the session's instructions or served context), `brief_or_parent` (it repeats what a brief or parent agent said), `external` (from a document, web page or tool output from outside).
 **Scope:** where it applies: repo (owner/name or path), tool, and host or machine. Write `any` for a part that does not narrow it.
 **Applies when:** one line naming the situation in which a future agent needs this.
+**Outcome:** one line on what happened next in the transcript: fixed (and by what), worked around, still open, or decided. Write `not a problem` for an item that is not about a problem.
 ```
 
 `<kind>` is your own one- or two-word label for what kind of information this is.

@@ -7,9 +7,11 @@ import random
 import re
 
 LEARNED_FROM = ("failure", "user", "discovered", "served_or_loaded", "brief_or_parent", "external")
-GRADES = ("keep", "state", "junk")
+GRADES = ("keep", "state", "junk", "defect")
 FIELDS = {"what": "What", "why": "Why", "so_what": "So what", "event": "Event",
           "learned_from": "Learned from", "scope": "Scope", "applies_when": "Applies when"}
+# Fields some contracts add; parsed when present, never required (extract-v3 adds Outcome).
+OPTIONAL = {"outcome": "Outcome"}
 
 
 class InvalidOutput(ValueError):
@@ -34,6 +36,8 @@ def parse_extract(text: str) -> list[dict]:
         item = {"kind": kind.strip() if title else "", "title": (title or kind).strip(),
                 "markdown": "## " + part.strip()}
         for key, label in FIELDS.items():
+            item[key] = _field(body, label)
+        for key, label in OPTIONAL.items():
             item[key] = _field(body, label)
         empty = [FIELDS[k] for k in FIELDS if not item[k]]
         if empty or not item["title"]:
@@ -134,5 +138,6 @@ def merge(groups: list[dict], ids: dict, extracts: dict[str, list[dict]]) -> lis
             "grade": g["grade"], "unsupported": bool(g.get("unsupported")),
             "learned_from": learned(g.get("learned_from")),
             "reason": g.get("reason"),
+            "outcome": g.get("outcome"), "owner": g.get("owner"),
         })
     return lessons
