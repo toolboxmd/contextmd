@@ -39,6 +39,7 @@ class Entry:
     version: str
     text: str
     must_know_before: bool = False
+    path: str = ""
     commands: list[list[str]] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -100,6 +101,7 @@ def parse(path: Path) -> Entry:
         version=hashlib.sha256(raw).hexdigest()[:12],
         text=body,
         must_know_before=flag == "true",
+        path=str(path),
         commands=[c.split() for c in fields.get("command", []) if c.split()],
         paths=[p for p in fields.get("path", []) if p],
         errors=[normalize_error(e) for e in fields.get("error", []) if e],

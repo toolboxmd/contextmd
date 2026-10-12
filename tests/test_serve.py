@@ -151,11 +151,11 @@ class HookSeamTest(unittest.TestCase):
             entry(self.keys_dir, f"e{i}", f"rule {i} " + "y" * 1490, command=f"tool{i}")
         self.fire("UserPromptSubmit", prompt="x")
         served = [self.bash("PostToolUse", f"tool{i}", i) for i in range(8)]
-        self.assertEqual(sum(s is not None for s in served), 6)  # 6 x ~1,520 chars fit in 10,000
+        self.assertEqual(sum(s is not None for s in served), 5)  # 5 x ~1,520 chars fit the 8,000 serve pool
         total = sum(len(s["additionalContext"]) for s in served if s)
-        self.assertLessEqual(total, 10_000)
+        self.assertLessEqual(total, 8_000)
         cuts = [s for rec in self.log() for s in rec["serves"] if s["outcome"] == "cut_budget"]
-        self.assertEqual([c["entry"] for c in cuts], ["e6", "e7"])
+        self.assertEqual([c["entry"] for c in cuts], ["e5", "e6", "e7"])
         self.assertTrue(all(c["cut"] == "turn" for c in cuts))
         # The next turn has a fresh budget.
         self.fire("UserPromptSubmit", prompt="y")
@@ -229,8 +229,11 @@ class HookSeamTest(unittest.TestCase):
             out = self.bash("PreToolUse", command, n)
             self.assertEqual(out and out["permissionDecision"], "deny", command)
 
-    def kill_while_writing(self, event, command, n):
-        """Run the real hook with a full stdout pipe and kill it once its reservation is pending."""
+    def kill_while_writing(self, event, command, n, reap=True):
+        """Run the real hook with a full stdout pipe and kill it once its reservation is pending.
+
+        With ``reap=False`` the killed hook stays a zombie, and the caller reaps it.
+        """
         before = len(self.log()) if (self.state / "serving.db").exists() else 0
         ev = {"hook_event_name": event, "session_id": self.session, "cwd": str(self.repo),
               "tool_name": "Bash", "tool_input": {"command": command}, "tool_use_id": f"t{n}"}
@@ -255,9 +258,11 @@ class HookSeamTest(unittest.TestCase):
         else:
             self.fail("the hook never reserved")
         p.kill()
-        p.wait()
+        if reap:
+            p.wait()
         os.close(w)
         os.close(r)
+        return p
 
     def test_killed_hook_does_not_spend_the_deny(self):
         entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
@@ -270,13 +275,41 @@ class HookSeamTest(unittest.TestCase):
         entry(self.keys_dir, "pr", "P" * 600, command="gh pr create", must_know_before="true")
         self.fire("UserPromptSubmit", prompt="x")
         for i in range(6):
-            self.assertIsNotNone(self.bash("PostToolUse", f"tool{i}", i))
-        # The deny still fits the turn, but only once.
+            self.bash("PostToolUse", f"tool{i}", i)  # the serve pool is now full
         self.kill_while_writing("PreToolUse", "gh pr create", 10)
         out = self.bash("PreToolUse", "gh pr create", 11)
         self.assertEqual(out and out["permissionDecision"], "deny")
         outcomes = [s["outcome"] for r in self.log() for s in r["serves"] if s.get("entry") == "pr"]
         self.assertEqual(outcomes, ["delivery_unverified", "injected"])
+
+    def test_unreaped_killed_hook_does_not_block_the_retry_deny(self):
+        for i in range(6):
+            entry(self.keys_dir, f"e{i}", f"rule {i} " + "y" * 1490, command=f"tool{i}")
+        entry(self.keys_dir, "pr", "P" * 600, command="gh pr create", must_know_before="true")
+        self.fire("UserPromptSubmit", prompt="x")
+        for i in range(6):
+            self.bash("PostToolUse", f"tool{i}", i)
+        p = self.kill_while_writing("PreToolUse", "gh pr create", 10, reap=False)
+        try:
+            out = self.bash("PreToolUse", "gh pr create", 11)  # the dead hook is still a zombie
+            self.assertEqual(out and out["permissionDecision"], "deny")
+            self.assertIn("P" * 600, out["permissionDecisionReason"])
+        finally:
+            p.wait()
+
+    def test_second_deny_beyond_the_deny_pool_is_minimal(self):
+        entry(self.keys_dir, "first", "A" * 1500, command="gh pr create", must_know_before="true")
+        entry(self.keys_dir, "second", "B" * 1500, command="git push", must_know_before="true")
+        self.fire("UserPromptSubmit", prompt="x")
+        self.assertIn("A" * 1500, self.bash("PreToolUse", "gh pr create", 1)["permissionDecisionReason"])
+        out = self.bash("PreToolUse", "git push", 2)
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertNotIn("B" * 100, out["permissionDecisionReason"])
+        self.assertIn(str(self.keys_dir / "second.md"), out["permissionDecisionReason"])
+        s = self.log()[-1]["serves"][0]
+        self.assertEqual((s["entry"], s["outcome"], s["minimal"]), ("second", "injected", True))
+        # The rule was delivered by name; the retry passes.
+        self.assertIsNone(self.bash("PreToolUse", "git push", 3))
 
     def test_failed_output_releases_the_deny(self):
         entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")
