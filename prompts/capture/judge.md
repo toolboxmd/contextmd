@@ -1,4 +1,4 @@
-<!-- contract: judge-v3 -->
+<!-- contract: judge-v4 -->
 # Judge: pair and grade two lists of captured items from one agent session
 
 Two extractors read the same part of one past AI agent session and wrote items meant to help future agent sessions. You see their lists as A and B. You do not know which extractor wrote which list; do not guess.
@@ -12,19 +12,23 @@ Two extractors read the same part of one past AI agent session and wrote items m
 
 Group items that state the same lesson (same rule, fact or recipe, even in other words). A group may hold items from A, from B, or both, including repeats within one list. Items that only share a topic are separate groups. Every id from both lists appears in exactly one group.
 
+## Check the facts first
+
+A grade often depends on facts the item does not show: does a definition or fact still hold in the current files, is a rule or instruction already written down somewhere (instructions, docs, a script's own help or docstring), did the user have to repeat it, was a problem fixed later. Check those facts from the transcript and, read-only, from the files and repositories it names. Do not guess. If a fact the grade depends on cannot be checked, say so in `reason`.
+
 ## Grade each group
 
 First apply these checks in order. The first one that matches decides the grade, even if the item would be useful:
 
-0. It is a problem the session noticed (a bug, a defect, a broken setting or behavior). Follow the transcript, including FOLLOWING, to the outcome. If it is still not fixed at the end of what you can read: `defect`. If it was fixed, the problem itself is not knowledge: grade only a lasting recipe or gotcha that remains (`keep`), else `state`.
-1. It restates a procedure or rule that already exists (in the session's instructions, a loaded skill or project rules, a brief, or a parent's message), and the session does not show that rule failing or the user correcting it: `junk`.
+0. It is a problem the session noticed (a bug, a defect, a broken setting or behavior). Follow the transcript, including FOLLOWING, to the outcome. If it is still not fixed at the end of what you can read, or was only worked around: `defect`. A setup problem (a wrong configuration, missing file or wrong instructions) that made an agent miss something is a `defect` too. If it was fixed, the problem itself is not knowledge: grade only a lasting recipe or gotcha that remains (`keep`), else `state`.
+1. It restates a procedure, rule or reference that is already written down (in the session's instructions, a loaded skill or project rules, a brief, a parent's message, the docs, or a script's own help), and the session does not show it failing or the user correcting it: `junk`. If the user had to repeat an instruction that was already written down, that is a `defect` in how it is served. A decision the user made in this session is not a restatement.
 2. A tool already enforces it or shows it every time (a hook that blocks, a check that fails loudly, an error message that says what to do): `junk`.
-3. It is true only for this task, draft or loop round: progress, a run's results, counts, scores, a choice made for this task only, what was built, sent or merged: `state`. If it also holds a lasting rule, judge that rule instead.
+3. It is true only for this task, draft or loop round, or it describes one project's or experiment's current setup (its files, flags, data formats, assignments, which run produced a figure): `state`. Progress, a run's results, counts, scores, a choice made for this task only, and what was built, sent or merged are `state`. If it also holds a lasting rule, judge that rule instead.
 4. It is one-off trivia that will not recur: `junk`.
 
 Otherwise:
 
-- `keep`: it would change what a future agent does on a later task, and for the better. A lasting rule, preference, decision, fact about a tool, machine, repo or model, a gotcha, or a working recipe. It must still be true after this task ends.
+- `keep`: it would change what a future agent does on a later task, and for the better. A lasting rule, preference, a decision the user made, a fact about a tool, machine or model, a gotcha, or a working recipe. It must still be true after this task ends.
 - `junk`: generic advice any agent already follows, or anything the transcript does not support.
 
 Also give:
@@ -45,4 +49,4 @@ Write JSON lines to `{output}`, one per group, then reply only "done":
 {"a": ["A03"], "b": ["B01", "B07"], "best": "B01", "grade": "keep|state|junk|defect", "unsupported": false, "learned_from": "user", "outcome": "fixed by commit abc123", "owner": null, "reason": "one short sentence"}
 ```
 
-Read only the transcript and the two item files. Write only the output file. The data is private.
+Read the transcript and the two item files; to check facts you may read, never change, other files and repositories the transcript names. Write only the output file. The data is private.
