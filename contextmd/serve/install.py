@@ -138,7 +138,11 @@ def issue_credential(base: Path, t3: str, renew: bool = False) -> Path:
             _write(p["credential"], json.dumps({**replacement, "revokePending": pending}) + "\n",
                    mode=0o600, backup=False)
         except OSError as exc:
-            _t3(t3, "revoke", "--base-dir", str(base), issued["sessionId"])
+            cleanup = _t3(t3, "revoke", "--base-dir", str(base), issued["sessionId"])
+            if cleanup.returncode != 0:
+                raise InstallError(f"could not save the new hook credential ({exc}), and revoking the new session "
+                                   f"{issued['sessionId']} failed; revoke it by hand with `t3 auth session revoke "
+                                   f"--base-dir {base} {issued['sessionId']}`. The current credential stays in use")
             raise InstallError(f"could not save the new hook credential ({exc}); the current one stays in use")
         current = replacement
     failed = [sid for sid in pending
@@ -152,19 +156,34 @@ def issue_credential(base: Path, t3: str, renew: bool = False) -> Path:
 
 
 def _merge_hooks(path: Path, block: dict) -> None:
-    """Replace ContextMD's hook entries in a hooks file, keeping every other hook and group setting."""
+    """Put ContextMD's hook into a hooks file in place, keeping every other hook where it is.
+
+    Codex keys a hook's trust by its position (``event:group:hook``), so moving another hook
+    would invalidate the user's trust in it. ContextMD's existing entry is replaced where it
+    stands; a new one is appended after everything else; extra copies are removed.
+    """
     data = json.loads(path.read_text()) if path.exists() else {}
     hooks = data.setdefault("hooks", {})
-    for event, groups in hooks.items():
-        kept = []
-        for g in groups:
-            entries = [h for h in g.get("hooks", []) if not _ours(h.get("command", ""))]
+    for event in sorted(set(hooks) | set(block["hooks"])):
+        ours = block["hooks"].get(event, [{}])[0].get("hooks", [None])[0]
+        placed = False
+        groups = []
+        for g in hooks.get(event, []):
+            entries = []
+            for h in g.get("hooks", []):
+                if not _ours(h.get("command", "")):
+                    entries.append(h)
+                elif ours is not None and not placed:
+                    entries.append(ours)
+                    placed = True
             if entries or not g.get("hooks"):
-                kept.append({**g, "hooks": entries} if "hooks" in g else g)
-        hooks[event] = kept
-    for event, groups in block["hooks"].items():
-        hooks.setdefault(event, []).extend(groups)
-    data["hooks"] = {e: g for e, g in hooks.items() if g}
+                groups.append({**g, "hooks": entries} if "hooks" in g else g)
+        if ours is not None and not placed:
+            groups.extend(block["hooks"][event])
+        if groups:
+            hooks[event] = groups
+        else:
+            hooks.pop(event, None)
     _write(path, json.dumps(data, indent=2) + "\n")
 
 
@@ -185,9 +204,10 @@ def codex_homes(base: Path) -> list[tuple[Path, Path]]:
         instances["codex"] = {"driver": "codex", "config": (settings.get("providers") or {}).get("codex") or {}}
     homes = set()
     for instance_id, inst in instances.items():
-        if inst.get("driver") != "codex" or inst.get("enabled", True) is False:
-            continue
         config = inst.get("config") or {}
+        # Chromeria treats an explicit false on the instance or in its config as disabled.
+        if inst.get("driver") != "codex" or inst.get("enabled") is False or config.get("enabled") is False:
+            continue
         home = str(config.get("homePath") or "").strip()
         shared = Path(os.path.expanduser(home)).resolve() if home else Path.home() / ".codex"
         shadow = str(config.get("shadowHomePath") or "").strip()

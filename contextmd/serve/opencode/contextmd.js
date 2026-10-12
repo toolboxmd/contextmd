@@ -100,6 +100,11 @@ export default async function contextmd(ctx) {
       const last = [...output.messages].reverse().find((m) => m.info.role === "user");
       const list = last && served.get(last.info.sessionID);
       if (!list || list.length === 0) return;
+      // Serving switched off: show and settle nothing more, and forget what was queued.
+      if (endpoint() === null) {
+        served.delete(last.info.sessionID);
+        return;
+      }
       for (const item of list) {
         if (item.state === "refused") continue;
         last.parts.push({

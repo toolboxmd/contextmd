@@ -295,6 +295,43 @@ class InstallTest(unittest.TestCase):
         self.assertTrue(any(k.startswith(str(custom / "hooks.json")) for k in state))
         self.assertTrue(any(k.startswith(str(shadow / "hooks.json")) for k in state))
 
+    def test_reinstall_keeps_every_other_hook_at_its_position(self):
+        # Codex keys trust by position, so foreign hooks must not move when ours is replaced.
+        codex = self.home / ".codex"
+        codex.mkdir(parents=True)
+        old = f"/bin/sh /old/checkout/bin/contextmd-hook codex {self.base}"
+        foreign = lambda n: {"hooks": [{"type": "command", "command": f"/usr/local/bin/foreign-{n}"}]}
+        (codex / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [
+            foreign(1), {"hooks": [{"type": "command", "command": old}]}, foreign(2)]}}))
+        self.run_cli("install", "codex", "--base", str(self.base))
+        pre = json.loads((codex / "hooks.json").read_text())["hooks"]["PreToolUse"]
+        self.assertEqual([g["hooks"][0]["command"].split()[-1] for g in pre],
+                         ["/usr/local/bin/foreign-1", str(self.base), "/usr/local/bin/foreign-2"])
+        self.assertNotIn("/old/checkout", json.dumps(pre))
+
+    def test_a_failed_rollback_names_the_session_to_revoke(self):
+        self.run_cli("install", "grok", "--base", str(self.base))
+        cred = self.base / "userdata" / "contextmd" / "hook-credential"
+        (cred.parent / "hook-credential.contextmd-tmp").mkdir()
+        real = (self.bin / "t3").read_text()
+        (self.bin / "t3").write_text(real.replace("#!/bin/sh\n", '#!/bin/sh\n[ "$3" = revoke ] && exit 1\n', 1))
+        done = self.run_cli("install", "grok", "--base", str(self.base), "--renew", check=False)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("s2", done.stdout)
+        self.assertIn("revoke it by hand", done.stdout)
+        self.assertNotIn("tok", done.stdout)
+        self.assertEqual(json.loads(cred.read_text())["token"], "tok1")
+
+    def test_skips_disabled_codex_instances(self):
+        main = self.root.resolve() / "codex-main"
+        work = self.root.resolve() / "codex-work"
+        (self.base / "userdata" / "settings.json").write_text(json.dumps({
+            "providers": {"codex": {"enabled": False, "homePath": str(main)}},
+            "providerInstances": {"codexWork": {"driver": "codex", "config": {"enabled": False, "homePath": str(work)}}},
+        }))
+        from contextmd.serve import install
+        self.assertEqual(install.codex_homes(self.base), [])
+
     def test_refuses_a_directory_that_is_not_a_chromeria_base(self):
         done = self.run_cli("install", "claude", "--base", str(self.root / "nothing"), check=False)
         self.assertEqual(done.returncode, 1)
@@ -360,6 +397,23 @@ out.retried = settles.length - before;
 m = msgs();
 await hooks["experimental.chat.messages.transform"]({}, m);
 out.afterRefusal = m.messages[0].parts.map((p) => p.text);
+
+// With the off switch, queued text is neither shown nor settled, and is forgotten.
+const t3 = hooks["chat.message"]({ sessionID: "s" }, {});
+replies[4]({ context: "THIRD" });
+await t3;
+const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+const offDir = process.argv[3];
+writeFileSync(offDir + "/off", "");
+const settlesBeforeOff = settles.length;
+m = msgs();
+await hooks["experimental.chat.messages.transform"]({}, m);
+out.whileOff = m.messages[0].parts.map((p) => p.text);
+rmSync(offDir + "/off");
+m = msgs();
+await hooks["experimental.chat.messages.transform"]({}, m);
+out.afterOff = m.messages[0].parts.map((p) => p.text);
+out.settlesWhileOff = settles.length - settlesBeforeOff;
 console.log(JSON.stringify(out));
 """
 
@@ -376,7 +430,8 @@ class OpenCodePluginTest(unittest.TestCase):
             plugin.write_text(install.plugin_source(base))
             script = base / "run.mjs"
             script.write_text(PLUGIN_SCRIPT)
-            done = subprocess.run(["node", str(script), str(plugin)], capture_output=True, text=True, timeout=30)
+            done = subprocess.run(["node", str(script), str(plugin), str(base / "userdata" / "contextmd")],
+                                  capture_output=True, text=True, timeout=30)
             self.assertEqual(done.returncode, 0, done.stderr)
             out = json.loads(done.stdout)
             self.assertEqual(out["parts"], ["NEW TURN"])
@@ -386,6 +441,7 @@ class OpenCodePluginTest(unittest.TestCase):
             self.assertEqual(out["settles"], 2)
             self.assertEqual(out["retried"], 2)
             self.assertEqual(out["afterRefusal"], [])
+            self.assertEqual((out["whileOff"], out["afterOff"], out["settlesWhileOff"]), ([], [], 0))
 
 
 class HookScriptTest(unittest.TestCase):
