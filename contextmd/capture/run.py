@@ -150,7 +150,7 @@ class Capture:
             if fresh and not cur and not experiment:
                 # Record where capture starts, so a first capture that never commits
                 # is retried from here instead of from the next window's start.
-                start = old[-1].ordinal if old else fresh[0].ordinal - 1
+                start = min(it.ordinal for it in fresh) - 1  # ordinals, not times, order a thread
                 self.store.set_cursor(tid, {"ordinal": start, "item_id": None, "ts": since,
                                             "run": run_id, "baseline": True})
             # While the thread is still running, stop before its first unfinished item;
@@ -403,9 +403,10 @@ class Capture:
                     self.save(run)
                     continue
                 seg.pop("error", None)
+                taken: set = set()
                 for it in queue_items:
                     if not run["experiment"]:
-                        self._free_key(it)
+                        self._free_key(it, taken)
                     if run["experiment"]:
                         write_json(self._run_dir(run["run_id"]) / "items" /
                                    f"{Store.key_name(it['key'])}.json", it)
@@ -427,15 +428,17 @@ class Capture:
                     "open_segments": sum(1 for s in run["segments"] if not s["committed"]),
                     "errors": {s["id"]: s["error"] for s in run["segments"] if s.get("error")}}
 
-    def _free_key(self, item: dict) -> None:
-        """Bump the item's index past keys an earlier run already holds in the queue.
+    def _free_key(self, item: dict, taken: set) -> None:
+        """Bump the item's index past keys another run holds or this commit already used.
 
         A segment captured again after ``abandon`` must not replace another run's
         lessons; a repeated commit of the same run still rewrites its own items.
         """
         while True:
-            held = read_json(self.store.queue / f"{Store.key_name(item['key'])}.json")
-            if held is None or held["run"]["run_id"] == item["run"]["run_id"]:
+            name = Store.key_name(item["key"])
+            held = read_json(self.store.queue / f"{name}.json")
+            if name not in taken and (held is None or held["run"]["run_id"] == item["run"]["run_id"]):
+                taken.add(name)
                 return
             item["key"]["index"] += 1
 

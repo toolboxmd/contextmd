@@ -358,6 +358,32 @@ class RunTest(unittest.TestCase):
         self.assertIn({"job": f"{seg}-extract-sol", "task_id": "t", "output": "run-failed"},
                       self.cap.next_jobs()["invalid"])
 
+    def test_recapture_with_two_lessons_at_one_event_keeps_every_lesson(self):
+        run = self.prepare()
+        useg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
+        self.dispatch_all("extract")
+        self.finish_segment(run, useg)
+        self.cap.commit()
+        self.cap.abandon("rest stuck")
+        self.cap.store.set_cursor(self.U, {"ordinal": 1, "baseline": True})
+        run2 = self.prepare()
+        seg2 = next(s for s in run2["segments"] if s["thread"] == self.U)["id"]
+        sdir = self.cap.store.runs / run2["run_id"] / "seg" / seg2
+        first = min(int(n) for n in self.lines(run2, seg2))
+        self.dispatch_all("extract")
+        for name in ("sol", "grok"):
+            (sdir / f"extract-{name}.md").write_text(md(("new A", first, "user"), ("new B", first, "user")))
+        for j in self.cap.next_jobs()["due"]:
+            if j["job"] == f"{seg2}-judge":
+                self.cap.record(j["job"], task_id="tj", child_thread=f"{DT}contextmd-capture-child-1")
+        (sdir / "judge.jsonl").write_text(
+            json.dumps({"a": ["A01"], "b": ["B01"], "grade": "keep", "learned_from": "user"}) + "\n" +
+            json.dumps({"a": ["A02"], "b": ["B02"], "grade": "keep", "learned_from": "user"}) + "\n")
+        self.cap.commit()
+        self.cap.commit()  # a repeated commit of the same run rewrites, never duplicates
+        mine = [i for i in self.cap.store.queued() if i["key"]["thread"] == self.U]
+        self.assertEqual(sorted(i["title"] for i in mine), sorted(["lesson " + useg, "new A", "new B"]))
+
     def test_leftover_running_item_in_a_finished_thread_does_not_block_it(self):
         run = self.prepare()
         tid = f"{DT}stale-item-1"
