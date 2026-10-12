@@ -105,7 +105,7 @@ def _read_side(ns, cap_: Capture) -> dict:
         return out
     if ns.cmd == "compare":
         seg = cap_.load(ns.segmented_run)
-        name = hashlib.sha256(ns.thread.encode()).hexdigest()[:12]
+        name = hashlib.sha256(f"{ns.segmented_run}|{ns.thread}".encode()).hexdigest()[:12]
         out_dir = cap_.store.runs / ns.whole_run / "compare" / name
         if ns.result:
             cuts = [s_["last"]["ts"] for s_ in seg["segments"] if s_["thread"] == ns.thread][:-1]
