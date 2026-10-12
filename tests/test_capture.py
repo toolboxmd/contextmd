@@ -235,7 +235,7 @@ class RunTest(unittest.TestCase):
         self.assertTrue(sol["clientRequestId"].startswith("contextmd-capture-"))
         brief = Path(sol["task"].split("brief at ", 1)[1].split(" and do", 1)[0]).read_text()
         self.assertIn(sol["output"], brief)
-        self.assertIn("contract: extract-v1", brief)
+        self.assertIn("contract: extract-v2", brief)
         self.dispatch_all("extract")
         useg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
         for s in run["segments"]:
@@ -560,14 +560,14 @@ class RunTest(unittest.TestCase):
         self.cap.commit()
         before = len(self.cap.store.queued())
         seg = run["segments"][0]["id"]
-        rep = self.cap.replay(run["run_id"], [seg], "nolist", "extract-nolist.md")
-        self.assertEqual(rep["contracts"]["extract"], "extract-v1-nolist")
+        rep = self.cap.replay(run["run_id"], [seg], "v1", "extract-v1.md")
+        self.assertEqual(rep["contracts"]["extract"], "extract-v1")
         src = (self.cap.store.runs / run["run_id"] / "seg" / seg / "transcript.txt").read_text()
         self.assertEqual((self.cap.store.runs / rep["run_id"] / "seg" / seg / "transcript.txt").read_text(), src)
         job = next(j for j in self.cap.next_jobs()["due"] if j["job"] == f"{seg}-extract-sol")
         brief = Path(job["task"].split("brief at ", 1)[1].split(" and do", 1)[0]).read_text()
-        self.assertIn("contract: extract-v1-nolist", brief)
-        self.assertNotIn("Do not keep", brief)
+        self.assertIn("contract: extract-v1", brief)
+        self.assertIn("Do not keep", brief)
         self.dispatch_all("extract")
         self.finish_segment(rep, seg)
         self.assertEqual(self.cap.commit()["state"], "complete")

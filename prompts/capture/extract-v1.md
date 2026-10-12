@@ -1,4 +1,4 @@
-<!-- contract: extract-v1-nolist -->
+<!-- contract: extract-v1 -->
 # What should future sessions know?
 
 You read part of one past AI agent session between a user and their agents. Decide what in it would help future agent sessions do better work for this user.
@@ -18,7 +18,12 @@ Long texts are clipped with `[...]`. If the file has a CONTEXT section, those li
 
 Keep anything that would make a future agent act differently, and better, on a later task, if it knew it at the right moment. Decide for yourself what kinds of information this session holds. Keep it even if an agent could have looked it up: agents often do not look things up.
 
-Leave out state that will change, such as how far this task got, but keep any lasting rule mentioned in it.
+Do not keep:
+
+- Restatements of a rule, procedure or brief the session already had loaded or was given, unless the session shows it failing or the user correcting it.
+- Things a tool already enforces or shows every time (a hook that blocks, a check that fails loudly).
+- State true only for this task, draft or loop round: progress, run results, scores, counts, what was built or sent.
+- One-off trivia.
 
 ## Rules
 

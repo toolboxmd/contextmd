@@ -52,6 +52,20 @@ State lives in `~/.local/state/contextmd/capture/` (`queue/`, `cursors.json`,
 `~/.config/contextmd/capture.json`; see `contextmd/capture/config.py` for the
 keys.
 
+Segments overlap: each one ends with the first 12,000 rendered characters of
+the next as ordinary events, so a lesson that runs across a cut is seen whole.
+A lesson cited only in that overlap is kept and marked `moment.cited: overlap`.
+
+After a run is complete, `capture dedupe --run <run>` writes one judge brief
+that groups the run's kept lessons across segments and threads, and
+`--result` gives each item its group and the group's combined `found_by`.
+`capture report` then counts `found_by` per distinct lesson as well as per item.
+
+To compare prompts on identical input, `capture replay --from-run <run>
+--segment <id> ... --experiment <name> --extract-prompt <file>` re-runs chosen
+segments' exact transcripts with another prompt under `prompts/capture/`
+(`extract-v1.md` is the prompt of the first recorded run).
+
 To check segment boundaries, run the same threads whole with
 `capture prepare --whole --experiment whole --thread <id>`, finish that run,
 then `capture compare --whole-run <run> --segmented-run <run> --thread <id>`
