@@ -318,18 +318,42 @@ class HookSeamTest(unittest.TestCase):
         # The rule was delivered by name; the retry passes.
         self.assertIsNone(self.bash("PreToolUse", "git push", 3))
 
-    def test_deny_fallback_is_truncated_never_dropped(self):
-        # Both rules match one call; the first fills the output, so the second's pointer must shrink.
+    def test_a_deny_carries_only_whole_rules(self):
+        # Both rules match one call; the first fills the output, so the second waits for its next call.
         entry(self.keys_dir, "first", "A" * 1800, command="gh pr create", must_know_before="true")
         entry(self.keys_dir, "second", "B" * 1500, id="y" * 120, command="gh pr", must_know_before="true")
         self.fire("UserPromptSubmit", prompt="x")
         out = self.bash("PreToolUse", "gh pr create", 1)
-        self.assertEqual(out["permissionDecision"], "deny")
         self.assertLessEqual(len(out["permissionDecisionReason"].encode()), 2000)
+        self.assertNotIn("y" * 120, out["permissionDecisionReason"])
         serves = {s["entry"]: s for s in self.log()[-1]["serves"]}
         self.assertEqual(serves["first"]["outcome"], "injected")
-        self.assertEqual((serves["y" * 120]["outcome"], serves["y" * 120]["minimal"],
-                          serves["y" * 120]["truncated"]), ("injected", True, True))
+        self.assertEqual((serves["y" * 120]["outcome"], serves["y" * 120]["cut"]), ("cut_budget", "moment"))
+        retry = self.bash("PreToolUse", "gh pr create", 2)
+        self.assertIn("y" * 120, retry["permissionDecisionReason"])
+
+    def test_rules_that_do_not_fit_a_full_deny_wait_for_the_next_call(self):
+        entry(self.keys_dir, "a", "A" * 1800, id="first", command="gh pr create", must_know_before="true")
+        entry(self.keys_dir, "b", "B" * 1500, id="y" * 120, command="gh pr", must_know_before="true")
+        entry(self.keys_dir, "c", "C" * 1500, id="third", command="gh", must_know_before="true")
+        entry(self.keys_dir, "d", "D" * 1500, id="fourth", command="gh", must_know_before="true")
+        self.fire("UserPromptSubmit", prompt="x")
+        reason = self.bash("PreToolUse", "gh pr create", 1)["permissionDecisionReason"]
+        self.assertLessEqual(len(reason.encode()), 2000)
+        self.assertFalse(reason.endswith("\n\n"))
+        serves = self.log()[-1]["serves"]
+        delivered = [s["entry"] for s in serves if s["outcome"] == "injected"]
+        waiting = [s["entry"] for s in serves if s["outcome"] == "cut_budget"]
+        self.assertEqual(delivered[0], "first")
+        self.assertTrue(waiting)
+        for name in delivered[1:]:
+            self.assertIn(f"{name}. Read ", reason)  # a delivered pointer is whole
+        # The rules that did not fit whole deny the next call that matches them.
+        nxt = self.bash("PreToolUse", "gh pr list", 2)
+        self.assertEqual(nxt and nxt["permissionDecision"], "deny")
+        for name in waiting:
+            self.assertIn(name, nxt["permissionDecisionReason"])
+        self.assertIsNone(self.bash("PreToolUse", "gh pr list", 3))
 
     def test_failed_output_releases_the_deny(self):
         entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")

@@ -308,7 +308,7 @@ class Serving:
         """First fit within one pool of the turn (characters) and the host's per-output limit (bytes).
 
         ``fits(e, record, key, minimal=None)``: with a ``minimal`` text, an entry that
-        does not fit is served as that short text instead of being cut.
+        does not fit is served as that short text instead, if it fits whole.
         """
         budget = self._left(m, turn, pool)
         limit = HOST_LIMITS.get(m.host, {}).get("moment", 0)
@@ -327,11 +327,15 @@ class Serving:
                     self._serve(record, e, key, "cut_budget", seam=seam,
                                 cut="turn" if chars > budget else "moment")
                     return False
-                # A deny always goes out: as the short pointer, past the pool if need be,
-                # cut to the bytes left in this output if even that is too long.
+                # A deny goes out as the short pointer, past the pool if need be. An output
+                # carries only whole rules; a rule that does not fit waits for its next call.
+                # Only a first rule too long on its own is cut, and logged truncated.
                 text, extra = minimal, {"minimal": True}
                 chars, size = cost(text)
                 if size > limit:
+                    if parts:
+                        self._serve(record, e, key, "cut_budget", seam=seam, cut="moment")
+                        return False
                     room = max(0, limit - (size - len(text.encode())))
                     text = text.encode()[:room].decode(errors="ignore")
                     extra["truncated"] = True
