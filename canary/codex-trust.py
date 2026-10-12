@@ -51,9 +51,10 @@ for entry in result.get("data", []):
         if os.path.realpath(hook["sourcePath"]) != hooks_file:
             continue
         found += 1
-        table = f'[hooks.state."{hook["key"]}"]'
+        # json.dumps gives a valid TOML basic string for keys and hashes.
+        table = f'[hooks.state.{json.dumps(hook["key"])}]'
         if table not in existing:
-            lines.append(f'\n{table}\ntrusted_hash = "{hook["currentHash"]}"\n')
+            lines.append(f'\n{table}\ntrusted_hash = {json.dumps(hook["currentHash"])}\n')
 if not found:
     sys.exit(f"no hooks from {hooks_file} in hooks/list: {json.dumps(result)[:500]}")
 with open(config, "a") as fh:

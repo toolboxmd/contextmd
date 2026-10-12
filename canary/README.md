@@ -40,7 +40,7 @@ token at each end.
 | Host | Behavior over the limit |
 | --- | --- |
 | Claude Code | The 11.7 KB context was saved to a file. The model saw a 2 KB preview and the file path, so it quoted only the head token. The exact threshold was not measured. |
-| Codex | Context of 2,988 tokens was cut in the middle with `Warning: truncated output (original token count: 2988)`. The head and tail tokens both arrived. Codex's app-server protocol documents the default `additionalContext` spill threshold as 2,500 tokens (`HookMetadata.additional_context_limit`). |
+| Codex | Context of 2,988 tokens was cut in the middle with `Warning: truncated output (original token count: 2988)`. The head and tail tokens both arrived. Codex's app-server protocol calls this limit the `additionalContext` spill threshold, default 2,500 tokens (`HookMetadata.additional_context_limit` in openai/codex); no file was written, the middle was dropped. |
 | Grok Build | The context was clipped at 10,000 characters. The tail token was lost. |
 | OpenCode | All 11,951 appended characters arrived. No limit was seen at this size. |
 
@@ -48,8 +48,10 @@ token at each end.
 
 - Grok Build drops `additionalContext` from `PostToolUse` and from
   `UserPromptSubmit`. Serve Grok's tool-result text as `PreToolUse`
-  `additionalContext`, which arrives with the result. Other output fields at
-  those two events were not probed.
+  `additionalContext`, which arrives with the result. The hook writes that text
+  before the tool runs, so on Grok it cannot depend on the result, the exit
+  code or the error output. Other output fields at those two events were not
+  probed.
 - Grok loads project hooks only inside a git repository. With
   `GROK_FOLDER_TRUST=0` set in every run, no project hook fired in a plain
   folder, in Chromeria and in a direct `grok -p` run; after `git init`, they
