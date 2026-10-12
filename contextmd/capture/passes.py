@@ -1,6 +1,6 @@
-"""A capture run: prepare segments, hand out model jobs, commit judged items.
+"""A capture pass: prepare segments, hand out model jobs, commit judged items.
 
-A run is driven by hand from a Chromeria thread:
+A pass is driven by hand from a Chromeria thread:
 
 1. ``prepare`` syncs Agent Observer, inventories the window's threads,
    skips worker-batch and capture's own threads, renders each remaining
@@ -9,11 +9,11 @@ A run is driven by hand from a Chromeria thread:
    judge once both lists exist). The thread dispatches each through T3
    ``delegate_task`` with the given target and ``clientRequestId``, then
    saves the task id with ``record``. A job with a saved task id is never
-   handed out again unless it is recorded as failed, so a stopped run
+   handed out again unless it is recorded as failed, so a stopped pass
    resumes without re-dispatching finished or running work.
-3. ``commit`` syncs Observer again, merges each judged segment into queue
+3. ``commit`` syncs Observer again, merges each judged segment into inbox
    items, and moves a thread's cursor only past segments whose items are all
-   in the queue.
+   in the inbox.
 """
 
 from __future__ import annotations
@@ -37,11 +37,11 @@ def _contract(name: str) -> str:
     return first.split("contract:", 1)[1].split("-->")[0].strip() if "contract:" in first else name
 
 
-class RunError(RuntimeError):
+class CaptureError(RuntimeError):
     pass
 
 
-class AnchorMissing(RunError):
+class AnchorMissing(CaptureError):
     """A lesson's moment has no Observer event to anchor to; its segment stays open."""
 
 
@@ -84,78 +84,78 @@ class Capture:
             self._ao = observer.connect(self.cfg["observer_db"])
         return self._ao
 
-    def _run_dir(self, run_id: str) -> Path:
-        return self.store.runs / run_id
+    def _pass_dir(self, pass_id: str) -> Path:
+        return self.store.passes / pass_id
 
-    def load(self, run_id: str | None = None) -> dict:
-        run_id = run_id or self.store.active_run()
-        if not run_id:
-            raise RunError("no active capture run; start one with prepare")
-        run = read_json(self._run_dir(run_id) / "run.json")
-        if run is None:
-            raise RunError(f"run {run_id} has no run.json")
-        return run
+    def load(self, pass_id: str | None = None) -> dict:
+        pass_id = pass_id or self.store.active_pass()
+        if not pass_id:
+            raise CaptureError("no open capture pass; start one with prepare")
+        pass_ = read_json(self._pass_dir(pass_id) / "pass.json")
+        if pass_ is None:
+            raise CaptureError(f"pass {pass_id} has no pass.json")
+        return pass_
 
-    def save(self, run: dict) -> None:
-        write_json(self._run_dir(run["run_id"]) / "run.json", run)
+    def save(self, pass_: dict) -> None:
+        write_json(self._pass_dir(pass_["pass_id"]) / "pass.json", pass_)
 
     # ------------------------------------------------------------------ prepare
-    def _new_run_id(self, experiment: str | None) -> str:
+    def _new_pass_id(self, experiment: str | None) -> str:
         stem = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + (f"-{experiment}" if experiment else "")
-        run_id, n = stem, 1
-        while self._run_dir(run_id).exists():  # two runs in one second must not share a directory
+        pass_id, n = stem, 1
+        while self._pass_dir(pass_id).exists():  # two passes in one second must not share a directory
             n += 1
-            run_id = f"{stem}-{n}"
-        return run_id
+            pass_id = f"{stem}-{n}"
+        return pass_id
 
     def prepare(self, since: str, until: str, *, thread_ids=None, whole=False,
                 experiment: str | None = None) -> dict:
         with self.store.locked():
-            active = self.store.active_run()
+            active = self.store.active_pass()
             if active:
-                raise RunError(f"run {active} is still open; finish it with next/record/commit")
+                raise CaptureError(f"pass {active} is still open; finish it with next/record/commit, or abandon it")
             self._sync()
-            run_id = self._new_run_id(experiment)
-            run = self._plan(run_id, since, until, thread_ids, whole, experiment)
-            self._set_prompts(run, "extract.md")
-            self.save(run)
-            self.store.set_active_run(run_id)
-            return run
+            pass_id = self._new_pass_id(experiment)
+            pass_ = self._plan(pass_id, since, until, thread_ids, whole, experiment)
+            self._set_prompts(pass_, "extract.md")
+            self.save(pass_)
+            self.store.set_active_pass(pass_id)
+            return pass_
 
-    def replay(self, from_run: str, segment_ids: list[str], experiment: str,
+    def replay(self, from_pass: str, segment_ids: list[str], experiment: str,
                extract_prompt: str = "extract.md", reuse_extracts: bool = False) -> dict:
-        """An experiment run over exact segment transcripts of an earlier run.
+        """An experiment pass over exact segment transcripts of an earlier pass.
 
         Prompt comparisons need the same input, so the transcripts and line maps
-        are copied, not re-rendered. Cursors and the queue are not touched.
+        are copied, not re-rendered. Cursors and the inbox are not touched.
         """
         with self.store.locked():
-            active = self.store.active_run()
+            active = self.store.active_pass()
             if active:
-                raise RunError(f"run {active} is still open; finish it with next/record/commit")
+                raise CaptureError(f"pass {active} is still open; finish it with next/record/commit, or abandon it")
             self._sync()
-            src = self.load(from_run)
-            run_id = self._new_run_id(experiment)
+            src = self.load(from_pass)
+            pass_id = self._new_pass_id(experiment)
             segments, threads = [], {}
             for sid in segment_ids:
                 seg = next((s for s in src["segments"] if s["id"] == sid), None)
                 if seg is None:
-                    raise RunError(f"run {from_run} has no segment {sid}")
-                to = self._run_dir(run_id) / "seg" / sid
+                    raise CaptureError(f"pass {from_pass} has no segment {sid}")
+                to = self._pass_dir(pass_id) / "seg" / sid
                 to.mkdir(parents=True, exist_ok=True)
                 for name in ("transcript.txt", "lines.json"):
-                    shutil.copyfile(self._run_dir(from_run) / "seg" / sid / name, to / name)
-                if reuse_extracts:  # judge-only: the source run's finished extractor outputs
+                    shutil.copyfile(self._pass_dir(from_pass) / "seg" / sid / name, to / name)
+                if reuse_extracts:  # judge-only: the source pass's finished extractor outputs
                     for ext in self.cfg["extractors"]:
                         job = src["jobs"][f"{sid}-extract-{ext}"]
                         shutil.copyfile(self._paths(src, job)["output"], to / f"extract-{ext}.md")
                 segments.append({**{k: seg[k] for k in ("id", "thread", "chars", "last")},
-                                 "committed": False, "source": {"run": from_run, "segment": sid}})
+                                 "committed": False, "source": {"pass": from_pass, "segment": sid}})
                 threads.setdefault(seg["thread"], {**src["threads"][seg["thread"]], "segments": []})
                 threads[seg["thread"]]["segments"].append(sid)
-            run = {"run_id": run_id, "machine": self.cfg["machine"], "since": src["since"],
+            pass_ = {"pass_id": pass_id, "machine": self.cfg["machine"], "since": src["since"],
                    "until": src["until"], "whole": False, "experiment": experiment, "created_at": _now(),
-                   "replay_of": from_run, "targets": {"extractors": self.cfg["extractors"],
+                   "replay_of": from_pass, "targets": {"extractors": self.cfg["extractors"],
                                                       "judge": self.cfg["judge"]},
                    "threads": threads, "segments": segments, "jobs": self._jobs(segments), "state": "open"}
             if reuse_extracts:
@@ -163,18 +163,18 @@ class Capture:
                     for ext in self.cfg["extractors"]:
                         done = [a for a in src["jobs"][f"{sid}-extract-{ext}"]["attempts"]
                                 if a.get("status") != "failed"]
-                        run["jobs"][f"{sid}-extract-{ext}"]["attempts"] = [{**done[-1], "reused_from": from_run}]
+                        pass_["jobs"][f"{sid}-extract-{ext}"]["attempts"] = [{**done[-1], "reused_from": from_pass}]
                 extract_prompt = src.get("prompts", {}).get("extract", "extract-v1.md")
-            self._set_prompts(run, extract_prompt)
-            self.save(run)
-            self.store.set_active_run(run_id)
-            return run
+            self._set_prompts(pass_, extract_prompt)
+            self.save(pass_)
+            self.store.set_active_pass(pass_id)
+            return pass_
 
-    def _set_prompts(self, run: dict, extract_prompt: str) -> None:
+    def _set_prompts(self, pass_: dict, extract_prompt: str) -> None:
         if not (PROMPTS / extract_prompt).is_file():
-            raise RunError(f"no prompt {extract_prompt} in {PROMPTS}")
-        run["prompts"] = {"extract": extract_prompt, "judge": "judge.md"}
-        run["contracts"] = {"extract": _contract(extract_prompt), "judge": _contract("judge.md")}
+            raise CaptureError(f"no prompt {extract_prompt} in {PROMPTS}")
+        pass_["prompts"] = {"extract": extract_prompt, "judge": "judge.md"}
+        pass_["contracts"] = {"extract": _contract(extract_prompt), "judge": _contract("judge.md")}
 
     def _jobs(self, segments: list[dict]) -> dict:
         jobs = {}
@@ -185,7 +185,7 @@ class Capture:
             jobs[f"{seg['id']}-judge"] = {"step": "judge", "segment": seg["id"], "attempts": []}
         return jobs
 
-    def _plan(self, run_id, since, until, thread_ids, whole, experiment) -> dict:
+    def _plan(self, pass_id, since, until, thread_ids, whole, experiment) -> dict:
         cfg = self.cfg
         active = chromeria.active_thread_ids(self.ch, since, until)
         if thread_ids:
@@ -193,7 +193,7 @@ class Capture:
         everything = chromeria.threads(self.ch)
         kinds = kinds_mod.classify(everything, cfg["own_task_prefix"], cfg["batch_min_siblings"])
         cursors = {} if experiment else self.store.cursors()
-        rdir = self._run_dir(run_id)
+        rdir = self._pass_dir(pass_id)
         threads, segments = {}, []
         max_chars = 0 if whole else cfg["segment_chars"]
         for tid in active:
@@ -227,9 +227,9 @@ class Capture:
                 # is retried from here instead of from the next window's start.
                 start = min(it.ordinal for it in fresh) - 1  # ordinals, not times, order a thread
                 self.store.set_cursor(tid, {"ordinal": start, "item_id": None, "ts": since,
-                                            "run": run_id, "baseline": True})
+                                            "pass": pass_id, "baseline": True})
             # While the thread is still running, stop before its first unfinished item;
-            # the next run starts there. A finished thread's leftover items are final.
+            # the next pass starts there. A finished thread's leftover items are final.
             if chromeria.run_state(self.ch, tid) in ("running", "queued"):
                 busy = next((i for i, it in enumerate(fresh) if it.status in chromeria.UNFINISHED), None)
                 if busy is not None:
@@ -268,7 +268,7 @@ class Capture:
                                  "committed": False})
                 entry["segments"].append(seg_id)
                 context = context + seg_lines
-        return {"run_id": run_id, "machine": cfg["machine"], "since": since, "until": until,
+        return {"pass_id": pass_id, "machine": cfg["machine"], "since": since, "until": until,
                 "whole": whole, "experiment": experiment, "created_at": _now(), "jobs": self._jobs(segments),
                 "targets": {"extractors": cfg["extractors"], "judge": cfg["judge"]},
                 "threads": threads, "segments": segments, "state": "open"}
@@ -280,35 +280,35 @@ class Capture:
         last = job["attempts"][-1] if job["attempts"] else None
         return last if last and last.get("status") != "failed" else None
 
-    def _paths(self, run: dict, job: dict) -> dict:
+    def _paths(self, pass_: dict, job: dict) -> dict:
         """Paths of the job's current attempt (the live one, else the next one).
 
         Each attempt writes its own file, so a superseded attempt that is
         still running can never overwrite the output of the one that replaced it.
         """
-        sdir = self._run_dir(run["run_id"]) / "seg" / job["segment"]
+        sdir = self._pass_dir(pass_["pass_id"]) / "seg" / job["segment"]
         n = len(job["attempts"]) if self._live(job) else len(job["attempts"]) + 1
         base, ext = (f"extract-{job['extractor']}", ".md") if job["step"] == "extract" else ("judge", ".jsonl")
         name = f"{base}{ext}" if n <= 1 else f"{base}.a{n}{ext}"
         return {"dir": sdir, "transcript": sdir / "transcript.txt", "output": sdir / name}
 
-    def _extract_job(self, run: dict, seg_id: str, name: str) -> dict:
-        return run["jobs"][f"{seg_id}-extract-{name}"]
+    def _extract_job(self, pass_: dict, seg_id: str, name: str) -> dict:
+        return pass_["jobs"][f"{seg_id}-extract-{name}"]
 
-    def _extract_items(self, run: dict, seg_id: str, name: str):
-        p = self._paths(run, self._extract_job(run, seg_id, name))["output"]
+    def _extract_items(self, pass_: dict, seg_id: str, name: str):
+        p = self._paths(pass_, self._extract_job(pass_, seg_id, name))["output"]
         if not p.exists():
             return None
         return items_mod.parse_extract(p.read_text(encoding="utf-8"))
 
-    def _output_state(self, run: dict, job: dict) -> str:
+    def _output_state(self, pass_: dict, job: dict) -> str:
         """done, missing, running, run-failed or invalid for the job's current attempt.
 
         Only a dispatched attempt's output counts, and only once its Chromeria
         run has completed: a model may write its file in several steps.
         """
         live = self._live(job)
-        out = self._paths(run, job)["output"]
+        out = self._paths(pass_, job)["output"]
         if live is None or not out.exists():
             return "missing"
         state = chromeria.run_state(self.ch, live["child_thread"])
@@ -317,59 +317,59 @@ class Capture:
         if state != "completed":
             return "running"  # running, queued, or a passing status between them
         if job["step"] == "judge" and any(
-                self._output_state(run, self._extract_job(run, job["segment"], n)) != "done"
-                for n in run["targets"]["extractors"]):
+                self._output_state(pass_, self._extract_job(pass_, job["segment"], n)) != "done"
+                for n in pass_["targets"]["extractors"]):
             return "missing"
         try:
             if job["step"] == "extract":
-                self._extract_items(run, job["segment"], job["extractor"])
+                self._extract_items(pass_, job["segment"], job["extractor"])
             else:
-                self._judged(run, job["segment"])
+                self._judged(pass_, job["segment"])
         except items_mod.InvalidOutput:
             return "invalid"
         return "done"
 
-    def _extract_hashes(self, run: dict, seg_id: str) -> dict:
+    def _extract_hashes(self, pass_: dict, seg_id: str) -> dict:
         out = {}
-        for n in run["targets"]["extractors"]:
-            p = self._paths(run, self._extract_job(run, seg_id, n))["output"]
+        for n in pass_["targets"]["extractors"]:
+            p = self._paths(pass_, self._extract_job(pass_, seg_id, n))["output"]
             out[n] = hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None
         return out
 
-    def _judge_inputs(self, run: dict, seg_id: str) -> dict:
-        sdir = self._run_dir(run["run_id"]) / "seg" / seg_id
-        extracts = {n: self._extract_items(run, seg_id, n) for n in run["targets"]["extractors"]}
-        sides, ids = items_mod.blind_lists(extracts, f"{run['run_id']}-{seg_id}")
+    def _judge_inputs(self, pass_: dict, seg_id: str) -> dict:
+        sdir = self._pass_dir(pass_["pass_id"]) / "seg" / seg_id
+        extracts = {n: self._extract_items(pass_, seg_id, n) for n in pass_["targets"]["extractors"]}
+        sides, ids = items_mod.blind_lists(extracts, f"{pass_['pass_id']}-{seg_id}")
         texts = items_mod.judge_input(extracts, sides)
         for side, text in texts.items():
             (sdir / f"judge-{side}.jsonl").write_text(text, encoding="utf-8")
-        write_json(sdir / "judge-sides.json", {**sides, "hashes": self._extract_hashes(run, seg_id)})
+        write_json(sdir / "judge-sides.json", {**sides, "hashes": self._extract_hashes(pass_, seg_id)})
         return {"extracts": extracts, "sides": sides, "ids": ids}
 
-    def _inputs_stale(self, run: dict, seg_id: str) -> bool:
+    def _inputs_stale(self, pass_: dict, seg_id: str) -> bool:
         """True when the judge's lists were built from other extractor outputs than the current ones."""
-        sides = read_json(self._run_dir(run["run_id"]) / "seg" / seg_id / "judge-sides.json")
+        sides = read_json(self._pass_dir(pass_["pass_id"]) / "seg" / seg_id / "judge-sides.json")
         if sides is None:
             return False
-        return sides.get("hashes") != self._extract_hashes(run, seg_id)
+        return sides.get("hashes") != self._extract_hashes(pass_, seg_id)
 
-    def _judged(self, run: dict, seg_id: str):
-        extracts = {n: self._extract_items(run, seg_id, n) for n in run["targets"]["extractors"]}
+    def _judged(self, pass_: dict, seg_id: str):
+        extracts = {n: self._extract_items(pass_, seg_id, n) for n in pass_["targets"]["extractors"]}
         if any(v is None for v in extracts.values()):
             raise items_mod.InvalidOutput("an extractor list is missing")
-        _, ids = items_mod.blind_lists(extracts, f"{run['run_id']}-{seg_id}")
+        _, ids = items_mod.blind_lists(extracts, f"{pass_['pass_id']}-{seg_id}")
         if not any(extracts.values()):
             return extracts, ids, []
-        if self._inputs_stale(run, seg_id):
+        if self._inputs_stale(pass_, seg_id):
             raise items_mod.InvalidOutput("judge inputs are older than the extractor outputs")
-        out = self._paths(run, run["jobs"][f"{seg_id}-judge"])["output"]
+        out = self._paths(pass_, pass_["jobs"][f"{seg_id}-judge"])["output"]
         groups = items_mod.parse_judge(out.read_text(encoding="utf-8"), ids)
         return extracts, ids, groups
 
-    def _task_text(self, run: dict, job_id: str, job: dict) -> str:
-        p = self._paths(run, job)
+    def _task_text(self, pass_: dict, job_id: str, job: dict) -> str:
+        p = self._paths(pass_, job)
         if job["step"] == "extract":
-            name = run.get("prompts", {}).get("extract", "extract.md")
+            name = pass_.get("prompts", {}).get("extract", "extract.md")
             return _fill((PROMPTS / name).read_text(), transcript=p["transcript"],
                          output=p["output"])
         sdir = p["dir"]
@@ -377,10 +377,10 @@ class Capture:
                      items_a=sdir / "judge-A.jsonl", items_b=sdir / "judge-B.jsonl",
                      output=p["output"])
 
-    def _brief(self, run: dict, job_id: str, job: dict) -> str:
+    def _brief(self, pass_: dict, job_id: str, job: dict) -> str:
         """Write the job's full prompt beside its segment; the task text points at it."""
-        path = self._paths(run, job)["output"].with_suffix(".brief.md")
-        path.write_text(self._task_text(run, job_id, job), encoding="utf-8")
+        path = self._paths(pass_, job)["output"].with_suffix(".brief.md")
+        path.write_text(self._task_text(pass_, job_id, job), encoding="utf-8")
         return (f"Read the brief at {path} and do exactly what it says. "
                 "Read only the files it names and write only its output file.")
 
@@ -388,125 +388,125 @@ class Capture:
         """Jobs to dispatch now (due), dispatched jobs still working (waiting), and
         dispatched jobs whose output or run failed (invalid: record them failed to retry)."""
         with self.store.locked():
-            run = self.load()
+            pass_ = self.load()
             due, waiting, invalid = [], [], []
-            for job_id, job in run["jobs"].items():
-                seg = self._segment(run, job["segment"])
+            for job_id, job in pass_["jobs"].items():
+                seg = self._segment(pass_, job["segment"])
                 if seg["committed"]:
                     continue
-                state = self._output_state(run, job)
+                state = self._output_state(pass_, job)
                 if state == "done":
                     continue
                 live = self._live(job)
                 if job["step"] == "judge":
-                    if any(self._output_state(run, self._extract_job(run, job["segment"], n)) != "done"
-                           for n in run["targets"]["extractors"]):
+                    if any(self._output_state(pass_, self._extract_job(pass_, job["segment"], n)) != "done"
+                           for n in pass_["targets"]["extractors"]):
                         continue
-                    extracts = {n: self._extract_items(run, job["segment"], n)
-                                for n in run["targets"]["extractors"]}
+                    extracts = {n: self._extract_items(pass_, job["segment"], n)
+                                for n in pass_["targets"]["extractors"]}
                     if not any(extracts.values()):
                         continue  # nothing to judge; commit records zero items
-                    if live is None and (self._inputs_stale(run, job["segment"]) or not (
-                            self._paths(run, job)["dir"] / "judge-sides.json").exists()):
-                        self._judge_inputs(run, job["segment"])
+                    if live is None and (self._inputs_stale(pass_, job["segment"]) or not (
+                            self._paths(pass_, job)["dir"] / "judge-sides.json").exists()):
+                        self._judge_inputs(pass_, job["segment"])
                 if live is not None:
                     entry = {"job": job_id, "task_id": live["task_id"], "output": state}
                     (invalid if state in ("invalid", "run-failed") else waiting).append(entry)
                     continue
                 attempt = len(job["attempts"]) + 1
-                target = (run["targets"]["extractors"][job["extractor"]] if job["step"] == "extract"
-                          else run["targets"]["judge"])
+                target = (pass_["targets"]["extractors"][job["extractor"]] if job["step"] == "extract"
+                          else pass_["targets"]["judge"])
                 due.append({
                     "job": job_id, "step": job["step"], "target": target,
-                    "clientRequestId": f"{self.cfg['own_task_prefix']}{run['run_id']}-{job_id}-{attempt}",
+                    "clientRequestId": f"{self.cfg['own_task_prefix']}{pass_['pass_id']}-{job_id}-{attempt}",
                     "title": f"contextmd capture {job_id}",
-                    "output": str(self._paths(run, job)["output"]),
-                    "task": self._brief(run, job_id, job)})
-            return {"run_id": run["run_id"], "due": due, "waiting": waiting, "invalid": invalid}
+                    "output": str(self._paths(pass_, job)["output"]),
+                    "task": self._brief(pass_, job_id, job)})
+            return {"pass_id": pass_["pass_id"], "due": due, "waiting": waiting, "invalid": invalid}
 
-    def _segment(self, run: dict, seg_id: str) -> dict:
-        return next(s for s in run["segments"] if s["id"] == seg_id)
+    def _segment(self, pass_: dict, seg_id: str) -> dict:
+        return next(s for s in pass_["segments"] if s["id"] == seg_id)
 
     def record(self, job_id: str, *, task_id: str | None = None, child_thread: str | None = None,
                failed: bool = False, note: str | None = None) -> dict:
         with self.store.locked():
-            run = self.load()
-            job = run["jobs"].get(job_id)
+            pass_ = self.load()
+            job = pass_["jobs"].get(job_id)
             if job is None:
-                raise RunError(f"no job {job_id} in run {run['run_id']}")
+                raise CaptureError(f"no job {job_id} in pass {pass_['pass_id']}")
             if failed:
                 if self._live(job) is None:
-                    raise RunError(f"job {job_id} has no live attempt to mark failed")
+                    raise CaptureError(f"job {job_id} has no live attempt to mark failed")
                 job["attempts"][-1]["status"] = "failed"
                 job["attempts"][-1]["note"] = note
             else:
                 if not task_id or not child_thread:
-                    raise RunError("record needs --task-id and --child-thread, or --failed")
+                    raise CaptureError("record needs --task-id and --child-thread, or --failed")
                 live = self._live(job)
                 if live and live["task_id"] == task_id:
                     live["child_thread"] = child_thread
                 elif live:
-                    raise RunError(f"job {job_id} already has live task {live['task_id']}")
+                    raise CaptureError(f"job {job_id} already has live task {live['task_id']}")
                 else:
                     job["attempts"].append({"task_id": task_id, "child_thread": child_thread,
                                             "recorded_at": _now(), "status": "dispatched"})
-            self.save(run)
+            self.save(pass_)
             return job
 
     # ------------------------------------------------------------------- commit
     def commit(self) -> dict:
         with self.store.locked():
-            run = self.load()
+            pass_ = self.load()
             self._sync()
             committed = 0
-            for seg in run["segments"]:
+            for seg in pass_["segments"]:
                 if seg["committed"]:
                     continue
-                jobs = [self._extract_job(run, seg["id"], n) for n in run["targets"]["extractors"]]
-                if any(self._output_state(run, j) != "done" for j in jobs):
+                jobs = [self._extract_job(pass_, seg["id"], n) for n in pass_["targets"]["extractors"]]
+                if any(self._output_state(pass_, j) != "done" for j in jobs):
                     continue
-                extracts = {n: self._extract_items(run, seg["id"], n) for n in run["targets"]["extractors"]}
+                extracts = {n: self._extract_items(pass_, seg["id"], n) for n in pass_["targets"]["extractors"]}
                 if any(extracts.values()):
-                    if self._output_state(run, run["jobs"][f"{seg['id']}-judge"]) != "done":
+                    if self._output_state(pass_, pass_["jobs"][f"{seg['id']}-judge"]) != "done":
                         continue
-                    extracts, ids, groups = self._judged(run, seg["id"])
+                    extracts, ids, groups = self._judged(pass_, seg["id"])
                     lessons = items_mod.merge(groups, ids, extracts)
                 else:
                     lessons = []
                 try:
-                    queue_items = self._queue_items(run, seg, lessons)
+                    pass_items = self._inbox_items(pass_, seg, lessons)
                 except AnchorMissing as exc:
                     seg["error"] = str(exc)
-                    self.save(run)
+                    self.save(pass_)
                     continue
                 seg.pop("error", None)
                 taken: set = set()
-                for it in queue_items:
-                    self._free_key(it, taken, self._run_dir(run["run_id"]) / "items"
-                                   if run["experiment"] else self.store.queue)
-                    if run["experiment"]:
-                        write_json(self._run_dir(run["run_id"]) / "items" /
+                for it in pass_items:
+                    self._free_key(it, taken, self._pass_dir(pass_["pass_id"]) / "items"
+                                   if pass_["experiment"] else self.store.inbox)
+                    if pass_["experiment"]:
+                        write_json(self._pass_dir(pass_["pass_id"]) / "items" /
                                    f"{Store.key_name(it['key'])}.json", it)
                     else:
                         self.store.put(it)
                 seg["committed"] = True
-                seg["items"] = len(queue_items)
+                seg["items"] = len(pass_items)
                 seg["committed_at"] = _now()
                 committed += 1
-                self.save(run)
-            if not run["experiment"]:
-                self._advance_cursors(run)
-            if all(s["committed"] for s in run["segments"]):
-                run["state"] = "complete"
-                run["completed_at"] = _now()
-                self.store.set_active_run(None)
-            self.save(run)
-            return {"run_id": run["run_id"], "committed_segments": committed, "state": run["state"],
-                    "open_segments": sum(1 for s in run["segments"] if not s["committed"]),
-                    "errors": {s["id"]: s["error"] for s in run["segments"] if s.get("error")}}
+                self.save(pass_)
+            if not pass_["experiment"]:
+                self._advance_cursors(pass_)
+            if all(s["committed"] for s in pass_["segments"]):
+                pass_["state"] = "complete"
+                pass_["completed_at"] = _now()
+                self.store.set_active_pass(None)
+            self.save(pass_)
+            return {"pass_id": pass_["pass_id"], "committed_segments": committed, "state": pass_["state"],
+                    "open_segments": sum(1 for s in pass_["segments"] if not s["committed"]),
+                    "errors": {s["id"]: s["error"] for s in pass_["segments"] if s.get("error")}}
 
     def _free_key(self, item: dict, taken: set, where: Path) -> None:
-        """Bump the item's index past keys another run or segment holds, or this commit used.
+        """Bump the item's index past keys another pass or segment holds, or this commit used.
 
         A segment captured again after ``abandon``, or a lesson cited in the overlap
         with the next segment, must not replace another segment's lessons; a repeated
@@ -515,26 +515,26 @@ class Capture:
         while True:
             name = Store.key_name(item["key"])
             held = read_json(where / f"{name}.json")
-            if name not in taken and (held is None or held["run"] == item["run"]):
+            if name not in taken and (held is None or held["pass"] == item["pass"]):
                 taken.add(name)
                 return
             item["key"]["index"] += 1
 
     def abandon(self, reason: str) -> dict:
-        """Close the open run; the next run captures its uncommitted segments' events again."""
+        """Close the open pass; the next pass captures its uncommitted segments' events again."""
         with self.store.locked():
-            run = self.load()
-            run["state"] = "abandoned"
-            run["abandoned"] = {"at": _now(), "reason": reason,
-                                "open_segments": [s["id"] for s in run["segments"] if not s["committed"]]}
-            self.save(run)
-            self.store.set_active_run(None)
-            return {"run_id": run["run_id"], **run["abandoned"]}
+            pass_ = self.load()
+            pass_["state"] = "abandoned"
+            pass_["abandoned"] = {"at": _now(), "reason": reason,
+                                "open_segments": [s["id"] for s in pass_["segments"] if not s["committed"]]}
+            self.save(pass_)
+            self.store.set_active_pass(None)
+            return {"pass_id": pass_["pass_id"], **pass_["abandoned"]}
 
-    def _advance_cursors(self, run: dict) -> None:
-        """Move each thread's cursor past its leading run of committed segments."""
+    def _advance_cursors(self, pass_: dict) -> None:
+        """Move each thread's cursor past its leading committed segments."""
         by_thread = defaultdict(list)
-        for seg in run["segments"]:
+        for seg in pass_["segments"]:
             by_thread[seg["thread"]].append(seg)
         for tid, segs in by_thread.items():
             last = None
@@ -543,13 +543,13 @@ class Capture:
                     break
                 last = seg["last"]
             if last:
-                self.store.set_cursor(tid, {**last, "run": run["run_id"]})
+                self.store.set_cursor(tid, {**last, "pass": pass_["pass_id"]})
 
-    def _model_evidence(self, run: dict, job: dict) -> dict:
+    def _model_evidence(self, pass_: dict, job: dict) -> dict:
         att = next((a for a in reversed(job["attempts"]) if a.get("status") != "failed"), None)
         out = {"requested": None, "observed": None, "task_id": att and att["task_id"]}
-        out["requested"] = (run["targets"]["extractors"][job["extractor"]]["model"]
-                            if job["step"] == "extract" else run["targets"]["judge"]["model"])
+        out["requested"] = (pass_["targets"]["extractors"][job["extractor"]]["model"]
+                            if job["step"] == "extract" else pass_["targets"]["judge"]["model"])
         if att and att.get("child_thread"):
             usage = observer.job_usage(self.ao, att["child_thread"])
             if usage:
@@ -561,14 +561,14 @@ class Capture:
         job["evidence"] = out
         return out
 
-    def _queue_items(self, run: dict, seg: dict, lessons: list[dict]) -> list[dict]:
-        sdir = self._run_dir(run["run_id"]) / "seg" / seg["id"]
+    def _inbox_items(self, pass_: dict, seg: dict, lessons: list[dict]) -> list[dict]:
+        sdir = self._pass_dir(pass_["pass_id"]) / "seg" / seg["id"]
         lines = read_json(sdir / "lines.json", {})
-        thread = run["threads"][seg["thread"]]
-        models = {"extractors": {n: self._model_evidence(run, run["jobs"][f"{seg['id']}-extract-{n}"])
-                                 for n in run["targets"]["extractors"]}}
-        if run["jobs"][f"{seg['id']}-judge"]["attempts"]:
-            models["judge"] = self._model_evidence(run, run["jobs"][f"{seg['id']}-judge"])
+        thread = pass_["threads"][seg["thread"]]
+        models = {"extractors": {n: self._model_evidence(pass_, pass_["jobs"][f"{seg['id']}-extract-{n}"])
+                                 for n in pass_["targets"]["extractors"]}}
+        if pass_["jobs"][f"{seg['id']}-judge"]["attempts"]:
+            models["judge"] = self._model_evidence(pass_, pass_["jobs"][f"{seg['id']}-judge"])
         per_event = Counter()
         out = []
         seg["in_overlap"] = 0
@@ -600,15 +600,15 @@ class Capture:
             index = per_event[line["item_id"]]
             per_event[line["item_id"]] += 1
             out.append({
-                "key": {"machine": run["machine"], "thread": seg["thread"], "event": line["item_id"],
+                "key": {"machine": pass_["machine"], "thread": seg["thread"], "event": line["item_id"],
                         "index": index},
                 "state": "extracted",
-                "moment": {"machine": run["machine"], "thread": seg["thread"], "turn_item": line["item_id"],
+                "moment": {"machine": pass_["machine"], "thread": seg["thread"], "turn_item": line["item_id"],
                            "ts": line["ts"], "line_kind": line["kind"], "cited": cited,
                            "observer": ref},
                 "source_time": line["ts"],
                 "scope": {"project_dir": thread.get("project_dir"), "harness": thread.get("provider"),
-                          "session_model": thread.get("model"), "machine": run["machine"],
+                          "session_model": thread.get("model"), "machine": pass_["machine"],
                           "stated": item.get("scope")},
                 "thread_kind": thread["kind"],
                 "kind": item.get("kind"), "title": item.get("title"), "what": item.get("what"),
@@ -622,7 +622,7 @@ class Capture:
                 "defect_owner": lesson.get("owner") if lesson["grade"] == "defect" else None,
                 "judge_reason": lesson["reason"], "members": lesson["members"],
                 "models": models,
-                "run": {"run_id": run["run_id"], "segment": seg["id"], "contracts": run["contracts"]},
+                "pass": {"pass_id": pass_["pass_id"], "segment": seg["id"], "contracts": pass_["contracts"]},
             })
         return out
 

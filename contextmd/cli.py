@@ -1,4 +1,4 @@
-"""contextmd capture prepare|next|record|commit|report. Stdlib only; prints JSON."""
+"""contextmd capture: prepare, next, record, commit, abandon, report and the experiment commands. Stdlib only; prints JSON."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 import sys
 
 from .capture import compare, config, dedupe, observer, report
-from .capture.run import Capture, RunError
+from .capture.passes import Capture, CaptureError
 from .capture.store import Busy, write_json
 
 
@@ -22,15 +22,15 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="contextmd")
     ap.add_argument("--config", default=None)
     sub = ap.add_subparsers(dest="area", required=True)
-    cap = sub.add_parser("capture", help="extract and judge sessions into the local queue")
+    cap = sub.add_parser("capture", help="extract and judge sessions into the local inbox")
     cs = cap.add_subparsers(dest="cmd", required=True)
-    p = cs.add_parser("prepare", help="start a run: sync Observer, cut segments")
+    p = cs.add_parser("prepare", help="start a pass: sync Observer, cut segments")
     p.add_argument("--day", help="UTC day YYYY-MM-DD (sets --since and --until)")
     p.add_argument("--since")
     p.add_argument("--until")
     p.add_argument("--thread", action="append", help="limit to these thread ids")
     p.add_argument("--whole", action="store_true", help="one segment per thread")
-    p.add_argument("--experiment", help="name; items stay in the run, cursors do not move")
+    p.add_argument("--experiment", help="name; items stay in the pass, cursors do not move")
     cs.add_parser("next", help="jobs to dispatch now, and dispatched jobs still waiting")
     r = cs.add_parser("record", help="save a dispatched job's T3 task id, or mark it failed")
     r.add_argument("job")
@@ -38,26 +38,26 @@ def main(argv=None) -> int:
     r.add_argument("--child-thread")
     r.add_argument("--failed", action="store_true")
     r.add_argument("--note")
-    cs.add_parser("commit", help="write judged segments to the queue and move cursors")
-    ab = cs.add_parser("abandon", help="close the open run; the next run captures its uncommitted events again")
+    cs.add_parser("commit", help="write judged segments to the inbox and move cursors")
+    ab = cs.add_parser("abandon", help="close the open pass; the next pass captures its uncommitted events again")
     ab.add_argument("--reason", required=True)
     rp = cs.add_parser("report", help="counts per step and thread kind, cost per model step")
-    rp.add_argument("--run")
-    cp = cs.add_parser("compare", help="boundary check: whole-thread run versus segmented run")
-    cp.add_argument("--whole-run", required=True)
-    cp.add_argument("--segmented-run", required=True)
+    rp.add_argument("--pass", dest="pass_id")
+    cp = cs.add_parser("compare", help="boundary check: whole-thread pass versus segmented pass")
+    cp.add_argument("--whole-pass", required=True)
+    cp.add_argument("--segmented-pass", required=True)
     cp.add_argument("--thread", required=True)
     cp.add_argument("--result", action="store_true", help="read the compare job's output")
-    dd = cs.add_parser("dedupe", help="group a finished run's kept lessons across segments (one judge job)")
-    dd.add_argument("--run", required=True)
-    dd.add_argument("--result", action="store_true", help="apply the judge's groups to the run's items")
-    rp2 = cs.add_parser("replay", help="experiment run over exact segment transcripts of an earlier run")
-    rp2.add_argument("--from-run", required=True)
+    dd = cs.add_parser("dedupe", help="group a finished pass's kept lessons across segments (one judge job)")
+    dd.add_argument("--pass", dest="pass_id", required=True)
+    dd.add_argument("--result", action="store_true", help="apply the judge's groups to the pass's items")
+    rp2 = cs.add_parser("replay", help="experiment pass over exact segment transcripts of an earlier pass")
+    rp2.add_argument("--from-pass", required=True)
     rp2.add_argument("--segment", action="append", required=True)
     rp2.add_argument("--experiment", required=True)
     rp2.add_argument("--extract-prompt", default="extract.md", help="prompt file under prompts/capture/")
     rp2.add_argument("--reuse-extracts", action="store_true",
-                     help="copy the source run's extractor outputs; only the judge runs again")
+                     help="copy the source pass's extractor outputs; only the judge runs again")
     ns = ap.parse_args(argv)
     cfg = config.load(ns.config)
     cap_ = Capture(cfg)
@@ -69,11 +69,11 @@ def main(argv=None) -> int:
             since, until = _day_bounds(ns.day) if ns.day else (ns.since, ns.until)
             if not since or not until:
                 ap.error("prepare needs --day or --since and --until")
-            run = cap_.prepare(since, until, thread_ids=ns.thread, whole=ns.whole,
+            pass_ = cap_.prepare(since, until, thread_ids=ns.thread, whole=ns.whole,
                                experiment=ns.experiment)
-            out = {"run_id": run["run_id"], "segments": len(run["segments"]),
-                   "jobs": len(run["jobs"]),
-                   "threads": report.build(run, [])["steps"]}
+            out = {"pass_id": pass_["pass_id"], "segments": len(pass_["segments"]),
+                   "jobs": len(pass_["jobs"]),
+                   "threads": report.build(pass_, [])["steps"]}
         elif ns.cmd == "next":
             out = cap_.next_jobs()
         elif ns.cmd == "record":
@@ -84,10 +84,10 @@ def main(argv=None) -> int:
         elif ns.cmd == "abandon":
             out = cap_.abandon(ns.reason)
         elif ns.cmd == "replay":
-            run = cap_.replay(ns.from_run, ns.segment, ns.experiment, ns.extract_prompt, ns.reuse_extracts)
-            out = {"run_id": run["run_id"], "segments": len(run["segments"]), "jobs": len(run["jobs"]),
-                   "contracts": run["contracts"]}
-    except (RunError, Busy, observer.SyncFailed) as exc:
+            pass_ = cap_.replay(ns.from_pass, ns.segment, ns.experiment, ns.extract_prompt, ns.reuse_extracts)
+            out = {"pass_id": pass_["pass_id"], "segments": len(pass_["segments"]), "jobs": len(pass_["jobs"]),
+                   "contracts": pass_["contracts"]}
+    except (CaptureError, Busy, observer.SyncFailed) as exc:
         print(f"capture: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(out, indent=1, ensure_ascii=False))
@@ -96,19 +96,19 @@ def main(argv=None) -> int:
 
 def _read_side(ns, cap_: Capture) -> dict:
     if ns.cmd == "dedupe":
-        run = cap_.load(ns.run)
-        if run["state"] != "complete":
-            raise RunError(f"run {ns.run} is {run['state']}; dedupe needs a complete run")
-        rdir = cap_.store.runs / ns.run
-        files = dedupe.item_files(rdir, cap_.store.queue, ns.run)
+        pass_ = cap_.load(ns.pass_id)
+        if pass_["state"] != "complete":
+            raise CaptureError(f"pass {ns.pass_id} is {pass_['state']}; dedupe needs a complete pass")
+        rdir = cap_.store.passes / ns.pass_id
+        files = dedupe.item_files(rdir, cap_.store.inbox, ns.pass_id)
         out = (dedupe.apply if ns.result else dedupe.prepare)(rdir / "dedupe", files)
         if ns.result:
             write_json(rdir / "dedupe" / "result.json", out)
         return out
     if ns.cmd == "compare":
-        seg = cap_.load(ns.segmented_run)
-        name = hashlib.sha256(f"{ns.segmented_run}|{ns.thread}".encode()).hexdigest()[:12]
-        out_dir = cap_.store.runs / ns.whole_run / "compare" / name
+        seg = cap_.load(ns.segmented_pass)
+        name = hashlib.sha256(f"{ns.segmented_pass}|{ns.thread}".encode()).hexdigest()[:12]
+        out_dir = cap_.store.passes / ns.whole_pass / "compare" / name
         if ns.result:
             cuts = [s_["last"]["ts"] for s_ in seg["segments"] if s_["thread"] == ns.thread][:-1]
             out = compare.result(out_dir, cuts)
@@ -116,21 +116,21 @@ def _read_side(ns, cap_: Capture) -> dict:
         else:
             out = compare.prepare(
                 out_dir, ns.thread,
-                report.run_items(cap_.store.runs / ns.whole_run, cap_.store.queue, ns.whole_run),
-                report.run_items(cap_.store.runs / ns.segmented_run, cap_.store.queue, ns.segmented_run))
+                report.pass_items(cap_.store.passes / ns.whole_pass, cap_.store.inbox, ns.whole_pass),
+                report.pass_items(cap_.store.passes / ns.segmented_pass, cap_.store.inbox, ns.segmented_pass))
     else:
-        run = cap_.load(ns.run) if ns.run else _latest(cap_)
-        rdir = cap_.store.runs / run["run_id"]
-        out = report.build(run, report.run_items(rdir, cap_.store.queue, run["run_id"]))
+        pass_ = cap_.load(ns.pass_id) if ns.pass_id else _latest(cap_)
+        rdir = cap_.store.passes / pass_["pass_id"]
+        out = report.build(pass_, report.pass_items(rdir, cap_.store.inbox, pass_["pass_id"]))
         write_json(rdir / "report.json", out)
     return out
 
 
 def _latest(cap_: Capture) -> dict:
-    active = cap_.store.active_run()
+    active = cap_.store.active_pass()
     if active:
         return cap_.load(active)
-    runs = sorted(p.name for p in cap_.store.runs.iterdir()) if cap_.store.runs.exists() else []
-    if not runs:
-        raise RunError("no capture runs yet")
-    return cap_.load(runs[-1])
+    passes = sorted(p.name for p in cap_.store.passes.iterdir()) if cap_.store.passes.exists() else []
+    if not passes:
+        raise CaptureError("no capture passes yet")
+    return cap_.load(passes[-1])

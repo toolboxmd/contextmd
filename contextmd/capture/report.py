@@ -1,4 +1,4 @@
-"""Run report: counts per step and per thread kind, cost per model step."""
+"""Pass report: counts per step and per thread kind, cost per model step."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ from pathlib import Path
 from .store import read_json
 
 
-def build(run: dict, items: list[dict]) -> dict:
-    threads = run["threads"]
+def build(pass_: dict, items: list[dict]) -> dict:
+    threads = pass_["threads"]
     by_kind = defaultdict(Counter)
     for t in threads.values():
         by_kind[t["kind"]]["threads"] += 1
         by_kind[t["kind"]][t["status"] or "unknown"] += 1
-    seg_kind = {s["id"]: threads[s["thread"]]["kind"] for s in run["segments"]}
-    for s in run["segments"]:
+    seg_kind = {s["id"]: threads[s["thread"]]["kind"] for s in pass_["segments"]}
+    for s in pass_["segments"]:
         by_kind[seg_kind[s["id"]]]["segments"] += 1
     extracted = Counter()
     for it in items:
@@ -36,10 +36,10 @@ def build(run: dict, items: list[dict]) -> dict:
         "threads_captured": sum(1 for t in threads.values() if t["status"] == "captured"),
         "threads_no_new_events": sum(1 for t in threads.values() if t["status"] == "no-new-events"),
         "threads_held_back": sum(1 for t in threads.values() if t.get("held_back")),
-        "lessons_cited_in_overlap": sum(s.get("in_overlap", 0) for s in run["segments"]),
-        "segment_errors": {s["id"]: s["error"] for s in run["segments"] if s.get("error")},
-        "segments": len(run["segments"]),
-        "segments_committed": sum(1 for s in run["segments"] if s["committed"]),
+        "lessons_cited_in_overlap": sum(s.get("in_overlap", 0) for s in pass_["segments"]),
+        "segment_errors": {s["id"]: s["error"] for s in pass_["segments"] if s.get("error")},
+        "segments": len(pass_["segments"]),
+        "segments_committed": sum(1 for s in pass_["segments"] if s["committed"]),
         "extracted_items": dict(Counter(m["extractor"] for it in items for m in it["members"])),
         "lessons": len(items),
         "grades": dict(Counter(it["grade"] for it in items)),
@@ -56,7 +56,7 @@ def build(run: dict, items: list[dict]) -> dict:
     cost = defaultdict(lambda: {"jobs": 0, "attempts": 0, "failed_attempts": 0, "wall_s": [],
                                 "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
                                 "reasoning_tokens": 0, "observed_models": Counter()})
-    for job in run["jobs"].values():
+    for job in pass_["jobs"].values():
         name = job.get("extractor") or "judge"
         c = cost[name]
         if job["attempts"]:
@@ -78,13 +78,13 @@ def build(run: dict, items: list[dict]) -> dict:
         c["wall_s_total"] = sum(w) if w else None
         c["observed_models"] = dict(c["observed_models"])
         cost_out[name] = c
-    return {"run_id": run["run_id"], "machine": run["machine"], "since": run["since"],
-            "until": run["until"], "state": run["state"], "steps": steps,
+    return {"pass_id": pass_["pass_id"], "machine": pass_["machine"], "since": pass_["since"],
+            "until": pass_["until"], "state": pass_["state"], "steps": steps,
             "by_kind": {k: dict(v) for k, v in sorted(by_kind.items())}, "cost": cost_out}
 
 
-def run_items(run_dir: Path, queue_dir: Path, run_id: str) -> list[dict]:
+def pass_items(run_dir: Path, inbox_dir: Path, pass_id: str) -> list[dict]:
     src = run_dir / "items"
-    paths = sorted(src.glob("*.json")) if src.exists() else sorted(queue_dir.glob("*.json"))
+    paths = sorted(src.glob("*.json")) if src.exists() else sorted(inbox_dir.glob("*.json"))
     out = [read_json(p) for p in paths]
-    return [i for i in out if i and i["run"]["run_id"] == run_id]
+    return [i for i in out if i and i["pass"]["pass_id"] == pass_id]

@@ -1,9 +1,9 @@
 """Boundary check: segmented capture versus whole-thread capture of the same threads.
 
-A whole run (``prepare --whole --experiment``) and the segmented run cover the
-same window. A judge pairs the two runs' kept lessons per thread; code then
-reports lessons only the whole run found (lost to segmenting), lessons only
-the segmented run found, and how close each unmatched lesson sits to a
+A whole pass (``prepare --whole --experiment``) and the segmented pass cover the
+same window. A judge pairs the two passes' kept lessons per thread; code then
+reports lessons only the whole pass found (lost to segmenting), lessons only
+the segmented pass found, and how close each unmatched lesson sits to a
 segment boundary.
 """
 
@@ -41,7 +41,7 @@ def prepare(out_dir: Path, thread: str, whole: list[dict], segmented: list[dict]
             ids[f"S{n:02d}"] = it
             fh.write(json.dumps(_brief(it, f"S{n:02d}"), ensure_ascii=False) + "\n")
     write_json(out_dir / "ids.json", {k: {"key": v["key"], "ts": v["source_time"],
-                                          "segment": v["run"]["segment"]} for k, v in ids.items()})
+                                          "segment": v["pass"]["segment"]} for k, v in ids.items()})
     output = out_dir / "pairs.jsonl"
     brief = PROMPT.read_text().replace("{whole}", str(out_dir / "whole.jsonl")) \
         .replace("{segmented}", str(out_dir / "segmented.jsonl")).replace("{output}", str(output))

@@ -1,7 +1,7 @@
 """Capture configuration: defaults, overridden by ``~/.config/contextmd/capture.json``.
 
 Model targets are T3 ``delegate_task`` targets. Changing a model is a config
-change; each queue item records the model that actually answered.
+change; each inbox item records the model that actually answered.
 """
 
 from __future__ import annotations

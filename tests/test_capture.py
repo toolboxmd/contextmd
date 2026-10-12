@@ -9,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from contextmd.capture import compare, config, dedupe, items, kinds, observer, report, transcript  # noqa: E402
 from contextmd.capture.chromeria import Item, Thread  # noqa: E402
-from contextmd.capture.run import Capture, RunError, _contract  # noqa: E402
-from contextmd.capture.store import Busy, Store  # noqa: E402
+from contextmd.capture.passes import Capture, CaptureError, _contract  # noqa: E402
+from contextmd.capture.store import Busy, Store, migrate  # noqa: E402
 from tests.fixtures import chromeria_db, observer_db  # noqa: E402
 
 DT = "thread:delegated-task:command%3Amcp%3Ax%3Adelegate-task%3A"
@@ -125,8 +125,8 @@ def moved(cursors):
     return {t: c for t, c in cursors.items() if not c.get("baseline")}
 
 
-class RunTest(unittest.TestCase):
-    """A run over fake Chromeria and Observer records, driven like the thread drives it."""
+class PassTest(unittest.TestCase):
+    """A pass over fake Chromeria and Observer records, driven like the thread drives it."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -187,8 +187,8 @@ class RunTest(unittest.TestCase):
     def prepare(self):
         return self.cap.prepare("2026-10-10T00:00:00Z", "2026-10-11T00:00:00Z")
 
-    def lines(self, run, seg_id):
-        return json.loads((self.cap.store.runs / run["run_id"] / "seg" / seg_id / "lines.json").read_text())
+    def lines(self, pass_, seg_id):
+        return json.loads((self.cap.store.passes / pass_["pass_id"] / "seg" / seg_id / "lines.json").read_text())
 
     def dispatch_all(self, step, child=0):
         """Record a task for every due job of one step; returns the jobs."""
@@ -201,47 +201,47 @@ class RunTest(unittest.TestCase):
     def write(self, job, text):
         Path(job["output"]).write_text(text)
 
-    def finish_segment(self, run, seg_id, keep=True):
+    def finish_segment(self, pass_, seg_id, keep=True):
         """Both extractors find one lesson at the first body line; the judge pairs them."""
-        first = min(int(n) for n in self.lines(run, seg_id))
+        first = min(int(n) for n in self.lines(pass_, seg_id))
         for name in ("sol", "grok"):
-            out = self.cap.store.runs / run["run_id"] / "seg" / seg_id / f"extract-{name}.md"
+            out = self.cap.store.passes / pass_["pass_id"] / "seg" / seg_id / f"extract-{name}.md"
             out.write_text(md((f"lesson {seg_id}", first, "user")))
         for j in self.cap.next_jobs()["due"]:  # writes the blind judge inputs
             if j["job"] == f"{seg_id}-judge":
                 self.cap.record(j["job"], task_id="task-judge", child_thread=f"{DT}contextmd-capture-child-1")
-        sdir = self.cap.store.runs / run["run_id"] / "seg" / seg_id
+        sdir = self.cap.store.passes / pass_["pass_id"] / "seg" / seg_id
         (sdir / "judge.jsonl").write_text(json.dumps(
             {"a": ["A01"], "b": ["B01"], "best": "A01", "grade": "keep" if keep else "junk",
              "unsupported": False, "learned_from": "user", "reason": "r"}) + "\n")
 
     def test_skips_batch_and_own_threads_and_counts_them(self):
-        run = self.prepare()
-        st = {t: e["status"] for t, e in run["threads"].items()}
+        pass_ = self.prepare()
+        st = {t: e["status"] for t, e in pass_["threads"].items()}
         self.assertEqual(sum(1 for s in st.values() if s == "skipped:worker-batch"), 4)
         self.assertEqual(st[f"{DT}contextmd-capture-old-s000-judge-1"], "skipped:capture")
         self.assertEqual(st[self.U], "captured")
         self.assertEqual(self.syncs, [1])
 
     def test_window_and_context(self):
-        run = self.prepare()
-        seg = next(s for s in run["segments"] if s["thread"] == self.U)
-        text = (self.cap.store.runs / run["run_id"] / "seg" / seg["id"] / "transcript.txt").read_text()
+        pass_ = self.prepare()
+        seg = next(s for s in pass_["segments"] if s["thread"] == self.U)
+        text = (self.cap.store.passes / pass_["pass_id"] / "seg" / seg["id"] / "transcript.txt").read_text()
         self.assertIn("old question", text.split("## EVENTS")[0])
         self.assertIn("never use rm -rf", text.split("## EVENTS")[1])
         # Later events are shown only read-only, after the extractable lines.
         self.assertIn("tomorrow", text.split("## FOLLOWING")[1])
         self.assertNotIn("tomorrow", text.split("## FOLLOWING")[0])
-        self.assertNotIn("tomorrow", json.dumps(self.lines(run, seg["id"])))
+        self.assertNotIn("tomorrow", json.dumps(self.lines(pass_, seg["id"])))
         self.assertEqual(seg["last"]["ordinal"], 4)
-        big = [s for s in run["segments"] if s["thread"] == self.B]
+        big = [s for s in pass_["segments"] if s["thread"] == self.B]
         self.assertGreater(len(big), 1)
 
     def test_extract_then_judge_then_commit_writes_complete_items_and_moves_cursor(self):
-        run = self.prepare()
+        pass_ = self.prepare()
         due = self.cap.next_jobs()["due"]
         self.assertEqual({j["step"] for j in due}, {"extract"})
-        self.assertEqual(len(due), 2 * len(run["segments"]))
+        self.assertEqual(len(due), 2 * len(pass_["segments"]))
         sol = next(j for j in due if j["job"].endswith("extract-sol"))
         self.assertEqual(sol["target"]["model"], "gpt-6.1-sol")
         self.assertTrue(sol["clientRequestId"].startswith("contextmd-capture-"))
@@ -249,13 +249,13 @@ class RunTest(unittest.TestCase):
         self.assertIn(sol["output"], brief)
         self.assertIn(f"contract: {_contract('extract.md')}", brief)
         self.dispatch_all("extract")
-        useg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
-        for s in run["segments"]:
-            self.finish_segment(run, s["id"])
+        useg = next(s for s in pass_["segments"] if s["thread"] == self.U)["id"]
+        for s in pass_["segments"]:
+            self.finish_segment(pass_, s["id"])
         result = self.cap.commit()
         self.assertEqual(result["state"], "complete")
-        self.assertIsNone(self.cap.store.active_run())
-        q = [i for i in self.cap.store.queued() if i["key"]["thread"] == self.U]
+        self.assertIsNone(self.cap.store.active_pass())
+        q = [i for i in self.cap.store.inbox_items() if i["key"]["thread"] == self.U]
         self.assertEqual(len(q), 1)
         it = q[0]
         self.assertEqual(it["found_by"], ["grok", "sol"])
@@ -270,9 +270,9 @@ class RunTest(unittest.TestCase):
             self.assertTrue(it[field], field)
         self.assertEqual(self.cap.store.cursors()[self.U]["ordinal"], 4)
         # The same window again finds nothing new for captured threads.
-        run2 = self.prepare()
-        self.assertEqual(run2["threads"][self.U]["status"], "no-new-events")
-        self.assertIn(useg, [s["id"] for s in run["segments"]])
+        pass2 = self.prepare()
+        self.assertEqual(pass2["threads"][self.U]["status"], "no-new-events")
+        self.assertIn(useg, [s["id"] for s in pass_["segments"]])
 
     def test_resume_never_redispatches_recorded_jobs(self):
         self.prepare()
@@ -282,7 +282,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(resumed["due"], [])
         self.assertEqual(sorted(w["job"] for w in resumed["waiting"]), sorted(j["job"] for j in first))
         self.assertEqual(resumed["waiting"][0]["task_id"], "task-" + resumed["waiting"][0]["job"])
-        with self.assertRaises(RunError):
+        with self.assertRaises(CaptureError):
             self.cap.record(first[0]["job"], task_id="another-task")
 
     def test_failed_job_is_handed_out_again_as_a_new_attempt(self):
@@ -301,10 +301,10 @@ class RunTest(unittest.TestCase):
         self.assertTrue(Path(job["output"]).exists())
 
     def test_half_written_output_waits_for_the_run_and_stale_judge_inputs_are_redone(self):
-        run = self.prepare()
-        seg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
-        sdir = self.cap.store.runs / run["run_id"] / "seg" / seg
-        first = min(int(n) for n in self.lines(run, seg))
+        pass_ = self.prepare()
+        seg = next(s for s in pass_["segments"] if s["thread"] == self.U)["id"]
+        sdir = self.cap.store.passes / pass_["pass_id"] / "seg" / seg
+        first = min(int(n) for n in self.lines(pass_, seg))
         self.cap.record(f"{seg}-extract-sol", task_id="t-sol", child_thread=f"{DT}contextmd-capture-child-0")
         self.cap.record(f"{seg}-extract-grok", task_id="t-grok", child_thread=f"{DT}contextmd-capture-busy")
         (sdir / "extract-sol.md").write_text(md(("one", first, "user")))
@@ -329,14 +329,14 @@ class RunTest(unittest.TestCase):
     def test_record_requires_the_child_thread(self):
         self.prepare()
         job = self.cap.next_jobs()["due"][0]["job"]
-        with self.assertRaises(RunError):
+        with self.assertRaises(CaptureError):
             self.cap.record(job, task_id="t1")
 
     def test_extractor_failed_after_judge_wrote_does_not_crash_and_is_redone(self):
-        run = self.prepare()
-        seg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
+        pass_ = self.prepare()
+        seg = next(s for s in pass_["segments"] if s["thread"] == self.U)["id"]
         self.dispatch_all("extract")
-        self.finish_segment(run, seg)
+        self.finish_segment(pass_, seg)
         self.cap.record(f"{seg}-extract-sol", failed=True, note="redo")
         nxt = self.cap.next_jobs()
         self.assertIn(f"{seg}-extract-sol", [j["job"] for j in nxt["due"]])
@@ -345,15 +345,15 @@ class RunTest(unittest.TestCase):
         self.assertFalse(next(s for s in self.cap.load()["segments"] if s["id"] == seg)["committed"])
 
     def test_same_count_redo_makes_judge_inputs_stale(self):
-        run = self.prepare()
-        seg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
-        sdir = self.cap.store.runs / run["run_id"] / "seg" / seg
+        pass_ = self.prepare()
+        seg = next(s for s in pass_["segments"] if s["thread"] == self.U)["id"]
+        sdir = self.cap.store.passes / pass_["pass_id"] / "seg" / seg
         self.dispatch_all("extract")
-        self.finish_segment(run, seg)
+        self.finish_segment(pass_, seg)
         self.cap.record(f"{seg}-extract-grok", failed=True, note="redo")
         redo = next(j for j in self.cap.next_jobs()["due"] if j["job"] == f"{seg}-extract-grok")
         self.cap.record(redo["job"], task_id="t-redo", child_thread=f"{DT}contextmd-capture-child-0")
-        first = min(int(n) for n in self.lines(run, seg))
+        first = min(int(n) for n in self.lines(pass_, seg))
         Path(redo["output"]).write_text(md(("a different lesson", first, "failure")))  # same count
         self.assertIn(f"{seg}-judge", [i["job"] for i in self.cap.next_jobs()["invalid"]])
         self.cap.record(f"{seg}-judge", failed=True, note="stale")
@@ -361,8 +361,8 @@ class RunTest(unittest.TestCase):
         self.assertIn("a different lesson", (sdir / "judge-A.jsonl").read_text() + (sdir / "judge-B.jsonl").read_text())
 
     def test_failed_child_run_is_reported_not_waited_on(self):
-        run = self.prepare()
-        seg = run["segments"][0]["id"]
+        pass_ = self.prepare()
+        seg = pass_["segments"][0]["id"]
         self.ch.execute("INSERT INTO orchestration_v2_projection_runs VALUES(?,?,?,?)",
                         ("run-dead", f"{DT}dead", 1, json.dumps({"status": "failed", "completedAt": "x"})))
         self.cap.record(f"{seg}-extract-sol", task_id="t", child_thread=f"{DT}dead")
@@ -377,17 +377,17 @@ class RunTest(unittest.TestCase):
                       self.cap.next_jobs()["waiting"])
 
     def test_recapture_with_two_lessons_at_one_event_keeps_every_lesson(self):
-        run = self.prepare()
-        useg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
+        pass_ = self.prepare()
+        useg = next(s for s in pass_["segments"] if s["thread"] == self.U)["id"]
         self.dispatch_all("extract")
-        self.finish_segment(run, useg)
+        self.finish_segment(pass_, useg)
         self.cap.commit()
         self.cap.abandon("rest stuck")
         self.cap.store.set_cursor(self.U, {"ordinal": 1, "baseline": True})
-        run2 = self.prepare()
-        seg2 = next(s for s in run2["segments"] if s["thread"] == self.U)["id"]
-        sdir = self.cap.store.runs / run2["run_id"] / "seg" / seg2
-        first = min(int(n) for n in self.lines(run2, seg2))
+        pass2 = self.prepare()
+        seg2 = next(s for s in pass2["segments"] if s["thread"] == self.U)["id"]
+        sdir = self.cap.store.passes / pass2["pass_id"] / "seg" / seg2
+        first = min(int(n) for n in self.lines(pass2, seg2))
         self.dispatch_all("extract")
         for name in ("sol", "grok"):
             (sdir / f"extract-{name}.md").write_text(md(("new A", first, "user"), ("new B", first, "user")))
@@ -398,12 +398,12 @@ class RunTest(unittest.TestCase):
             json.dumps({"a": ["A01"], "b": ["B01"], "grade": "keep", "learned_from": "user"}) + "\n" +
             json.dumps({"a": ["A02"], "b": ["B02"], "grade": "keep", "learned_from": "user"}) + "\n")
         self.cap.commit()
-        # A crash after the items were written but before run.json was saved: commit again.
-        run2 = self.cap.load(run2["run_id"])
-        next(s for s in run2["segments"] if s["id"] == seg2)["committed"] = False
-        self.cap.save(run2)
+        # A crash after the items were written but before pass.json was saved: commit again.
+        pass2 = self.cap.load(pass2["pass_id"])
+        next(s for s in pass2["segments"] if s["id"] == seg2)["committed"] = False
+        self.cap.save(pass2)
         self.cap.commit()
-        mine = [i for i in self.cap.store.queued() if i["key"]["thread"] == self.U]
+        mine = [i for i in self.cap.store.inbox_items() if i["key"]["thread"] == self.U]
         self.assertEqual(sorted(i["title"] for i in mine), sorted(["lesson " + useg, "new A", "new B"]))
 
     def test_item_past_the_window_stops_the_segment_even_if_later_items_are_earlier(self):
@@ -413,15 +413,15 @@ class RunTest(unittest.TestCase):
         self.ch.execute("INSERT INTO orchestration_v2_projection_turn_items VALUES(?,?,?,?,?,?,?)",
                         (f"{self.W}-i4", self.W, 4, "assistant_message", "completed", "2026-10-10T23:59:00Z",
                          json.dumps({"startedAt": "2026-10-10T23:59:00Z", "text": "clock went back"})))
-        run = self.prepare()
-        seg = next(s for s in run["segments"] if s["thread"] == self.W)
+        pass_ = self.prepare()
+        seg = next(s for s in pass_["segments"] if s["thread"] == self.W)
         self.assertEqual(seg["last"]["ordinal"], 2)
 
     def test_leftover_running_item_in_a_finished_thread_does_not_block_it(self):
-        run = self.prepare()
+        pass_ = self.prepare()
         tid = f"{DT}stale-item-1"
-        self.assertNotIn("held_back", run["threads"][tid])
-        seg = next(s for s in run["segments"] if s["thread"] == tid)
+        self.assertNotIn("held_back", pass_["threads"][tid])
+        seg = next(s for s in pass_["segments"] if s["thread"] == tid)
         self.assertEqual(seg["last"]["ordinal"], 3)
 
     def test_native_id_match_is_literal(self):
@@ -432,40 +432,40 @@ class RunTest(unittest.TestCase):
                                          ts="2026-10-10T14:00:00Z")["anchor"], "exact")
 
     def test_items_still_being_written_are_held_back(self):
-        run = self.prepare()
-        seg = next(s for s in run["segments"] if s["thread"] == self.R)
+        pass_ = self.prepare()
+        seg = next(s for s in pass_["segments"] if s["thread"] == self.R)
         self.assertEqual(seg["last"]["ordinal"], 1)
-        self.assertTrue(run["threads"][self.R]["held_back"])
-        text = (self.cap.store.runs / run["run_id"] / "seg" / seg["id"] / "transcript.txt").read_text()
+        self.assertTrue(pass_["threads"][self.R]["held_back"])
+        text = (self.cap.store.passes / pass_["pass_id"] / "seg" / seg["id"] / "transcript.txt").read_text()
         self.assertNotIn("half a sen", text)
         self.assertNotIn("later", text.split("## FOLLOWING")[0])
-        self.assertEqual([l["item_id"] for l in self.lines(run, seg["id"]).values()], [f"{self.R}-i1"])
+        self.assertEqual([l["item_id"] for l in self.lines(pass_, seg["id"]).values()], [f"{self.R}-i1"])
 
     def test_lesson_without_observer_anchor_keeps_its_segment_open(self):
         self.ao.execute("DELETE FROM events WHERE session_key='codex:w'")
-        run = self.prepare()
-        wseg = next(s for s in run["segments"] if s["thread"] == self.W)["id"]
+        pass_ = self.prepare()
+        wseg = next(s for s in pass_["segments"] if s["thread"] == self.W)["id"]
         self.dispatch_all("extract")
-        for s in run["segments"]:
-            self.finish_segment(run, s["id"])
+        for s in pass_["segments"]:
+            self.finish_segment(pass_, s["id"])
         result = self.cap.commit()
         self.assertEqual(result["state"], "open")
         seg = next(s for s in self.cap.load()["segments"] if s["id"] == wseg)
         self.assertFalse(seg["committed"])
         self.assertIn("no Observer event", seg["error"])
         self.assertNotIn(self.W, moved(self.cap.store.cursors()))
-        self.assertTrue(all(i["moment"]["observer"] for i in self.cap.store.queued()))
+        self.assertTrue(all(i["moment"]["observer"] for i in self.cap.store.inbox_items()))
         self.assertIn(wseg, result["errors"])
         self.ao.execute("INSERT INTO events VALUES(?,?,?,?,?)", (22, "codex:w", epoch("2026-10-10T10:06:00Z"),
                                                                    "tool_call", "y"))
         self.assertEqual(self.cap.commit()["state"], "complete")
 
     def test_both_extractors_empty_commits_zero_items_without_a_judge(self):
-        run = self.prepare()
-        seg = next(s for s in run["segments"] if s["thread"] == self.W)["id"]
+        pass_ = self.prepare()
+        seg = next(s for s in pass_["segments"] if s["thread"] == self.W)["id"]
         self.dispatch_all("extract")
         for name in ("sol", "grok"):
-            (self.cap.store.runs / run["run_id"] / "seg" / seg / f"extract-{name}.md").write_text("NO ITEMS")
+            (self.cap.store.passes / pass_["pass_id"] / "seg" / seg / f"extract-{name}.md").write_text("NO ITEMS")
         self.assertNotIn(f"{seg}-judge", [j["job"] for j in self.cap.next_jobs()["due"]])
         self.cap.commit()
         seg_rec = next(s for s in self.cap.load()["segments"] if s["id"] == seg)
@@ -474,67 +474,67 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self.cap.store.cursors()[self.W]["ordinal"], 2)
 
     def test_abandoned_first_capture_is_retried_by_a_later_window(self):
-        run = self.prepare()
+        pass_ = self.prepare()
         out = self.cap.abandon("stuck job")
-        self.assertIsNone(self.cap.store.active_run())
-        self.assertEqual(len(out["open_segments"]), len(run["segments"]))
+        self.assertIsNone(self.cap.store.active_pass())
+        self.assertEqual(len(out["open_segments"]), len(pass_["segments"]))
         self.assertEqual(moved(self.cap.store.cursors()), {})
-        # The next day's run starts each thread where the abandoned run started it.
+        # The next day's pass starts each thread where the abandoned pass started it.
         later = self.cap.prepare("2026-10-11T00:00:00Z", "2026-10-12T00:00:00Z")
         useg = next(s for s in later["segments"] if s["thread"] == self.U)
-        text = (self.cap.store.runs / later["run_id"] / "seg" / useg["id"] / "transcript.txt").read_text()
+        text = (self.cap.store.passes / later["pass_id"] / "seg" / useg["id"] / "transcript.txt").read_text()
         self.assertIn("never use rm -rf", text.split("## EVENTS")[-1])
         self.assertIn("tomorrow", text)
 
-    def test_recapture_after_abandon_never_replaces_another_runs_lesson(self):
-        run = self.prepare()
-        useg = next(s for s in run["segments"] if s["thread"] == self.U)["id"]
+    def test_recapture_after_abandon_never_replaces_another_passes_lesson(self):
+        pass_ = self.prepare()
+        useg = next(s for s in pass_["segments"] if s["thread"] == self.U)["id"]
         self.dispatch_all("extract")
-        self.finish_segment(run, useg)
+        self.finish_segment(pass_, useg)
         self.cap.commit()
-        first = [i for i in self.cap.store.queued() if i["key"]["thread"] == self.U]
+        first = [i for i in self.cap.store.inbox_items() if i["key"]["thread"] == self.U]
         self.cap.abandon("rest stuck")
         self.cap.store.set_cursor(self.U, {"ordinal": 1, "baseline": True})  # as if U had not committed
-        run2 = self.prepare()
-        seg2 = next(s for s in run2["segments"] if s["thread"] == self.U)["id"]
+        pass2 = self.prepare()
+        seg2 = next(s for s in pass2["segments"] if s["thread"] == self.U)["id"]
         self.dispatch_all("extract")
-        self.finish_segment(run2, seg2)
+        self.finish_segment(pass2, seg2)
         self.cap.commit()
-        mine = [i for i in self.cap.store.queued() if i["key"]["thread"] == self.U]
+        mine = [i for i in self.cap.store.inbox_items() if i["key"]["thread"] == self.U]
         self.assertEqual(len(mine), 2)
         self.assertEqual(sorted(i["key"]["index"] for i in mine), [0, 1])
-        self.assertEqual({i["run"]["run_id"] for i in mine}, {run["run_id"], run2["run_id"]})
+        self.assertEqual({i["pass"]["pass_id"] for i in mine}, {pass_["pass_id"], pass2["pass_id"]})
         self.assertEqual(len(first), 1)
 
-    def test_report_counts_match_the_queue(self):
-        run = self.prepare()
+    def test_report_counts_match_the_inbox(self):
+        pass_ = self.prepare()
         self.dispatch_all("extract")
-        for s in run["segments"]:
-            self.finish_segment(run, s["id"])
+        for s in pass_["segments"]:
+            self.finish_segment(pass_, s["id"])
         self.cap.commit()
-        r = report.build(self.cap.load(run["run_id"]), self.cap.store.queued())
-        self.assertEqual(r["steps"]["lessons"], len(run["segments"]))
-        self.assertEqual(r["steps"]["keep_found_by"], {"grok+sol": len(run["segments"])})
+        r = report.build(self.cap.load(pass_["pass_id"]), self.cap.store.inbox_items())
+        self.assertEqual(r["steps"]["lessons"], len(pass_["segments"]))
+        self.assertEqual(r["steps"]["keep_found_by"], {"grok+sol": len(pass_["segments"])})
         self.assertEqual(r["steps"]["threads_skipped"], {"skipped:worker-batch": 4, "skipped:capture": 1})
         self.assertEqual(r["steps"]["threads_held_back"], 1)
-        self.assertEqual(r["cost"]["sol"]["observed_models"], {"gpt-6.1-sol-2026": len(run["segments"])})
+        self.assertEqual(r["cost"]["sol"]["observed_models"], {"gpt-6.1-sol-2026": len(pass_["segments"])})
 
     def test_segments_overlap_and_lessons_cited_in_the_overlap_are_kept(self):
-        run = self.prepare()
-        big = [s for s in run["segments"] if s["thread"] == self.B]
+        pass_ = self.prepare()
+        big = [s for s in pass_["segments"] if s["thread"] == self.B]
         first, second = big[0], big[1]
-        lines1 = self.lines(run, first["id"])
+        lines1 = self.lines(pass_, first["id"])
         ahead = [n for n, l in lines1.items() if not l["owned"]]
         owned = [n for n, l in lines1.items() if l["owned"]]
         self.assertTrue(ahead)
         # The overlap is the start of the next segment: the same turn items.
-        nxt = [l["item_id"] for n, l in sorted(self.lines(run, second["id"]).items(), key=lambda x: int(x[0]))]
+        nxt = [l["item_id"] for n, l in sorted(self.lines(pass_, second["id"]).items(), key=lambda x: int(x[0]))]
         self.assertEqual([lines1[n]["item_id"] for n in sorted(ahead, key=int)], nxt[:len(ahead)])
-        self.assertTrue(all(l["owned"] for l in self.lines(run, big[-1]["id"]).values()))
+        self.assertTrue(all(l["owned"] for l in self.lines(pass_, big[-1]["id"]).values()))
         self.assertEqual(first["last"]["ordinal"], max(lines1[n]["ordinal"] for n in owned))
         # One lesson cited only in the overlap, one cited in the overlap by its best item
         # but in an owned line by the other extractor.
-        sdir = self.cap.store.runs / run["run_id"] / "seg" / first["id"]
+        sdir = self.cap.store.passes / pass_["pass_id"] / "seg" / first["id"]
         self.dispatch_all("extract")
         a, o = int(ahead[0]), int(owned[0])
         (sdir / "extract-sol.md").write_text(md(("crosses the cut", a, "failure"), ("both", a, "user")))
@@ -553,30 +553,30 @@ class RunTest(unittest.TestCase):
         seg = next(s for s in self.cap.load()["segments"] if s["id"] == first["id"])
         self.assertTrue(seg["committed"])
         self.assertEqual(seg["in_overlap"], 1)
-        kept = {i["title"]: i for i in self.cap.store.queued() if i["run"]["segment"] == first["id"]}
+        kept = {i["title"]: i for i in self.cap.store.inbox_items() if i["pass"]["segment"] == first["id"]}
         self.assertEqual(sorted(kept), ["both", "crosses the cut"])
         self.assertEqual(kept["both"]["key"]["event"], lines1[str(o)]["item_id"])
         self.assertEqual(kept["crosses the cut"]["moment"]["cited"], "overlap")
         self.assertEqual(kept["crosses the cut"]["key"]["event"], lines1[str(a)]["item_id"])
         # The next segment's own lesson at that same event keeps its own key.
-        self.finish_segment(run, second["id"])
+        self.finish_segment(pass_, second["id"])
         self.cap.commit()
-        same = [i for i in self.cap.store.queued() if i["key"]["event"] == lines1[str(a)]["item_id"]]
+        same = [i for i in self.cap.store.inbox_items() if i["key"]["event"] == lines1[str(a)]["item_id"]]
         self.assertEqual(sorted(i["title"] for i in same), sorted(["crosses the cut", f"lesson {second['id']}"]))
         self.assertEqual(sorted(i["key"]["index"] for i in same), [0, 1])
 
-    def test_replay_uses_the_same_transcripts_with_another_prompt_and_leaves_the_queue(self):
-        run = self.prepare()
+    def test_replay_uses_the_same_transcripts_with_another_prompt_and_leaves_the_inbox(self):
+        pass_ = self.prepare()
         self.dispatch_all("extract")
-        for s_ in run["segments"]:
-            self.finish_segment(run, s_["id"])
+        for s_ in pass_["segments"]:
+            self.finish_segment(pass_, s_["id"])
         self.cap.commit()
-        before = len(self.cap.store.queued())
-        seg = run["segments"][0]["id"]
-        rep = self.cap.replay(run["run_id"], [seg], "v1", "extract-v1.md")
+        before = len(self.cap.store.inbox_items())
+        seg = pass_["segments"][0]["id"]
+        rep = self.cap.replay(pass_["pass_id"], [seg], "v1", "extract-v1.md")
         self.assertEqual(rep["contracts"]["extract"], "extract-v1")
-        src = (self.cap.store.runs / run["run_id"] / "seg" / seg / "transcript.txt").read_text()
-        self.assertEqual((self.cap.store.runs / rep["run_id"] / "seg" / seg / "transcript.txt").read_text(), src)
+        src = (self.cap.store.passes / pass_["pass_id"] / "seg" / seg / "transcript.txt").read_text()
+        self.assertEqual((self.cap.store.passes / rep["pass_id"] / "seg" / seg / "transcript.txt").read_text(), src)
         job = next(j for j in self.cap.next_jobs()["due"] if j["job"] == f"{seg}-extract-sol")
         brief = Path(job["task"].split("brief at ", 1)[1].split(" and do", 1)[0]).read_text()
         self.assertIn("contract: extract-v1", brief)
@@ -584,44 +584,44 @@ class RunTest(unittest.TestCase):
         self.dispatch_all("extract")
         self.finish_segment(rep, seg)
         self.assertEqual(self.cap.commit()["state"], "complete")
-        self.assertEqual(len(self.cap.store.queued()), before)
-        self.assertEqual(len(list((self.cap.store.runs / rep["run_id"] / "items").glob("*.json"))), 1)
+        self.assertEqual(len(self.cap.store.inbox_items()), before)
+        self.assertEqual(len(list((self.cap.store.passes / rep["pass_id"] / "items").glob("*.json"))), 1)
 
     def test_replay_can_rerun_only_the_judge_on_the_same_extracts(self):
-        run = self.prepare()
+        pass_ = self.prepare()
         self.dispatch_all("extract")
-        for s_ in run["segments"]:
-            self.finish_segment(run, s_["id"])
+        for s_ in pass_["segments"]:
+            self.finish_segment(pass_, s_["id"])
         self.cap.commit()
-        seg = run["segments"][0]["id"]
-        rep = self.cap.replay(run["run_id"], [seg], "rejudge", reuse_extracts=True)
+        seg = pass_["segments"][0]["id"]
+        rep = self.cap.replay(pass_["pass_id"], [seg], "rejudge", reuse_extracts=True)
         self.assertEqual(rep["contracts"]["judge"], _contract("judge.md"))
-        src = (self.cap.store.runs / run["run_id"] / "seg" / seg / "extract-sol.md").read_text()
-        self.assertEqual((self.cap.store.runs / rep["run_id"] / "seg" / seg / "extract-sol.md").read_text(), src)
+        src = (self.cap.store.passes / pass_["pass_id"] / "seg" / seg / "extract-sol.md").read_text()
+        self.assertEqual((self.cap.store.passes / rep["pass_id"] / "seg" / seg / "extract-sol.md").read_text(), src)
         self.assertEqual([j["job"] for j in self.cap.next_jobs()["due"]], [f"{seg}-judge"])
 
     def test_dedupe_merges_found_by_across_segments(self):
-        run = self.prepare()
-        big = [s_["id"] for s_ in run["segments"] if s_["thread"] == self.B][:2]
+        pass_ = self.prepare()
+        big = [s_["id"] for s_ in pass_["segments"] if s_["thread"] == self.B][:2]
         self.dispatch_all("extract")
-        for s_ in run["segments"]:
-            self.finish_segment(run, s_["id"])
+        for s_ in pass_["segments"]:
+            self.finish_segment(pass_, s_["id"])
         self.cap.commit()
-        files = dedupe.item_files(self.cap.store.runs / run["run_id"], self.cap.store.queue, run["run_id"])
+        files = dedupe.item_files(self.cap.store.passes / pass_["pass_id"], self.cap.store.inbox, pass_["pass_id"])
         # Make the two B lessons single-extractor: one Sol-only, one Grok-only.
-        for (p, it), who in zip([f for f in files if f[1]["run"]["segment"] in big], (["sol"], ["grok"])):
+        for (p, it), who in zip([f for f in files if f[1]["pass"]["segment"] in big], (["sol"], ["grok"])):
             it["found_by"] = who
             p.write_text(json.dumps(it))
-        files = dedupe.item_files(self.cap.store.runs / run["run_id"], self.cap.store.queue, run["run_id"])
-        d = self.cap.store.runs / run["run_id"] / "dedupe"
+        files = dedupe.item_files(self.cap.store.passes / pass_["pass_id"], self.cap.store.inbox, pass_["pass_id"])
+        d = self.cap.store.passes / pass_["pass_id"] / "dedupe"
         dedupe.prepare(d, files)
         ids = json.loads((d / "ids.json").read_text())
         pair = [i for i, name in ids.items()
-                if any(p.name == name and it["run"]["segment"] in big for p, it in files)]
+                if any(p.name == name and it["pass"]["segment"] in big for p, it in files)]
         (d / "groups.jsonl").write_text(json.dumps({"ids": pair, "lesson": "same"}) + "\n")
         out = dedupe.apply(d, files)
         self.assertEqual(out["distinct_lessons"], out["keep_lessons"] - 1)
-        r = report.build(self.cap.load(run["run_id"]), self.cap.store.queued())
+        r = report.build(self.cap.load(pass_["pass_id"]), self.cap.store.inbox_items())
         self.assertEqual(r["steps"]["keep_found_by"].get("sol"), 1)
         self.assertEqual(r["steps"]["keep_found_by_distinct"].get("grok+sol"), out["distinct_lessons"])
         (d / "groups.jsonl").write_text(json.dumps({"ids": [pair[0], pair[0]]}) + "\n")
@@ -629,17 +629,17 @@ class RunTest(unittest.TestCase):
             dedupe.apply(d, files)
 
     def test_cursor_moves_only_past_leading_committed_segments(self):
-        run = self.prepare()
-        big = [s["id"] for s in run["segments"] if s["thread"] == self.B]
+        pass_ = self.prepare()
+        big = [s["id"] for s in pass_["segments"] if s["thread"] == self.B]
         self.dispatch_all("extract")
-        self.finish_segment(run, big[1])  # second segment ready, first not
+        self.finish_segment(pass_, big[1])  # second segment ready, first not
         self.cap.commit()
         self.assertNotIn(self.B, moved(self.cap.store.cursors()))
-        self.assertIsNotNone(self.cap.store.active_run())
-        self.finish_segment(run, big[0])
+        self.assertIsNotNone(self.cap.store.active_pass())
+        self.finish_segment(pass_, big[0])
         self.cap.commit()
         cur = self.cap.store.cursors()[self.B]
-        last = next(s for s in self.cap.load(run["run_id"])["segments"] if s["id"] == big[1])["last"]
+        last = next(s for s in self.cap.load(pass_["pass_id"])["segments"] if s["id"] == big[1])["last"]
         self.assertEqual(cur["ordinal"], last["ordinal"])
 
     def test_sync_failure_fails_prepare_and_commit(self):
@@ -647,19 +647,19 @@ class RunTest(unittest.TestCase):
             raise observer.SyncFailed("boom")
         with self.assertRaises(observer.SyncFailed):
             self.new(sync=fail).prepare("2026-10-10T00:00:00Z", "2026-10-11T00:00:00Z")
-        self.assertIsNone(self.cap.store.active_run())
-        run = self.prepare()
+        self.assertIsNone(self.cap.store.active_pass())
+        pass_ = self.prepare()
         self.dispatch_all("extract")
-        for s in run["segments"]:
-            self.finish_segment(run, s["id"])
+        for s in pass_["segments"]:
+            self.finish_segment(pass_, s["id"])
         with self.assertRaises(observer.SyncFailed):
             self.new(sync=fail).commit()
-        self.assertEqual(self.cap.store.queued(), [])
+        self.assertEqual(self.cap.store.inbox_items(), [])
         self.assertEqual(moved(self.cap.store.cursors()), {})
 
     def test_one_run_at_a_time(self):
         self.prepare()
-        with self.assertRaises(RunError):
+        with self.assertRaises(CaptureError):
             self.prepare()
         store = Store(self.cfg["state_dir"])
         with store.locked():
@@ -668,16 +668,41 @@ class RunTest(unittest.TestCase):
                 with self.assertRaises(Busy):
                     call(self.new())
 
-    def test_experiment_keeps_items_in_run_and_cursors_still(self):
-        run = self.cap.prepare("2026-10-10T00:00:00Z", "2026-10-11T00:00:00Z",
+    def test_experiment_keeps_items_in_pass_and_cursors_still(self):
+        pass_ = self.cap.prepare("2026-10-10T00:00:00Z", "2026-10-11T00:00:00Z",
                                thread_ids=[self.B], whole=True, experiment="whole")
-        self.assertEqual(len(run["segments"]), 1)
+        self.assertEqual(len(pass_["segments"]), 1)
         self.dispatch_all("extract")
-        self.finish_segment(run, run["segments"][0]["id"])
+        self.finish_segment(pass_, pass_["segments"][0]["id"])
         self.cap.commit()
-        self.assertEqual(self.cap.store.queued(), [])
+        self.assertEqual(self.cap.store.inbox_items(), [])
         self.assertEqual(self.cap.store.cursors(), {})
-        self.assertEqual(len(list((self.cap.store.runs / run["run_id"] / "items").glob("*.json"))), 1)
+        self.assertEqual(len(list((self.cap.store.passes / pass_["pass_id"] / "items").glob("*.json"))), 1)
+
+
+class MigrateTest(unittest.TestCase):
+    def test_old_run_and_queue_layout_is_moved_and_still_readable(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "runs" / "R1" / "items").mkdir(parents=True)
+        (root / "queue").mkdir()
+        (root / "runs" / "R1" / "run.json").write_text(json.dumps(
+            {"run_id": "R1", "state": "complete", "segments": [{"id": "s000", "source": {"run": "R0", "segment": "s000"}}]}))
+        item = {"key": {"machine": "m", "thread": "t", "event": "e", "index": 0}, "run": {"run_id": "R1", "segment": "s000"}}
+        (root / "queue" / "a.json").write_text(json.dumps(item))
+        (root / "runs" / "R1" / "items" / "b.json").write_text(json.dumps(item))
+        (root / "cursors.json").write_text(json.dumps({"t": {"ordinal": 3, "run": "R1"}}))
+        (root / "active-run").write_text("R1\n")
+        self.assertTrue(migrate(root))
+        self.assertFalse(migrate(root))  # idempotent
+        self.assertFalse((root / "runs").exists() or (root / "queue").exists())
+        p = json.loads((root / "passes" / "R1" / "pass.json").read_text())
+        self.assertEqual((p["pass_id"], p["segments"][0]["source"]), ("R1", {"pass": "R0", "segment": "s000"}))
+        for f in (root / "inbox" / "a.json", root / "passes" / "R1" / "items" / "b.json"):
+            self.assertEqual(json.loads(f.read_text())["pass"], {"pass_id": "R1", "segment": "s000"})
+        self.assertEqual(json.loads((root / "cursors.json").read_text())["t"], {"ordinal": 3, "pass": "R1"})
+        self.assertEqual(Store(root).active_pass(), "R1")
+        cfg = dict(config.DEFAULTS, machine="m1", state_dir=str(root))
+        self.assertEqual(Capture(cfg, chromeria_con=None, observer_con=None, sync=lambda: None).load("R1")["state"], "complete")
 
 
 class CliLockTest(unittest.TestCase):
@@ -710,7 +735,7 @@ class SyncGateTest(unittest.TestCase):
 class CompareTest(unittest.TestCase):
     def it(self, title, ts, grade="keep", thread="T", seg="s000"):
         return {"key": {"thread": thread}, "grade": grade, "title": title, "what": title,
-                "so_what": "", "source_time": ts, "run": {"segment": seg}}
+                "so_what": "", "source_time": ts, "pass": {"segment": seg}}
 
     def test_lost_extra_and_wrong_with_distance_to_cut(self):
         d = Path(tempfile.mkdtemp())

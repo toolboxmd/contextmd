@@ -2,9 +2,9 @@
 
 The judge pairs the two extractors' items only inside one segment, so a lesson
 found by Sol in one segment and by Grok in another counts as two single-extractor
-lessons. One judge job groups a run's kept lessons across segments and threads;
+lessons. One judge job groups a pass's kept lessons across segments and threads;
 code then gives each item its group and the group's combined ``found_by``.
-Items stay in the queue: reflection still decides what reaches an owner.
+Items stay in the inbox: reflection still decides what reaches an owner.
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ from .store import read_json, write_json
 PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "capture" / "dedupe.md"
 
 
-def item_files(run_dir: Path, queue_dir: Path, run_id: str) -> list[tuple[Path, dict]]:
+def item_files(run_dir: Path, inbox_dir: Path, pass_id: str) -> list[tuple[Path, dict]]:
     src = run_dir / "items"
-    paths = sorted(src.glob("*.json")) if src.exists() else sorted(queue_dir.glob("*.json"))
+    paths = sorted(src.glob("*.json")) if src.exists() else sorted(inbox_dir.glob("*.json"))
     out = []
     for p in paths:
         it = read_json(p)
-        if it and it["run"]["run_id"] == run_id:
+        if it and it["pass"]["pass_id"] == pass_id:
             out.append((p, it))
     return out
 

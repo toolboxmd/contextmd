@@ -2,7 +2,7 @@
 
 Capture reads Observer's ledger read-only after a successful
 ``agent-observer sync``. Observer maps each Chromeria thread to its native
-session; every queue item is anchored to an Observer event or submission in
+session; every inbox item is anchored to an Observer event or submission in
 that session, and every delegated job's actual model and token use come from
 the job's own session.
 """
@@ -21,7 +21,7 @@ class SyncFailed(RuntimeError):
 
 
 def sync(observer_bin: str) -> dict:
-    """Run ``agent-observer sync``; any failure fails the capture run."""
+    """Run ``agent-observer sync``; any failure fails the capture pass."""
     try:
         proc = subprocess.run([observer_bin, "sync", "--json"], capture_output=True,
                               text=True, timeout=1800)

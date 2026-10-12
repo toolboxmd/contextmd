@@ -1,1 +1,1 @@
-"""contextmd: capture what agents learn and serve it back."""
+"""ContextMD: capture what agents learn and serve it back."""
