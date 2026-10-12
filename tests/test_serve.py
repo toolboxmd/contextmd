@@ -59,6 +59,13 @@ class StoreTest(unittest.TestCase):
             self.assertEqual([e.id for e in st.entries], ["good"])
             self.assertEqual(len(st.errors), 2)
 
+    def test_long_entry_id_is_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            entry(d, "long", "Rule.", id="x" * 121, command="gh pr create")
+            st = store.load([d])
+            self.assertEqual(st.entries, [])
+            self.assertIn("id is 121 characters, over 120", st.errors[0])
+
     def test_version_changes_with_the_file(self):
         with tempfile.TemporaryDirectory() as d:
             p = entry(d, "a", "one", command="ls")
@@ -310,6 +317,19 @@ class HookSeamTest(unittest.TestCase):
         self.assertEqual((s["entry"], s["outcome"], s["minimal"]), ("second", "injected", True))
         # The rule was delivered by name; the retry passes.
         self.assertIsNone(self.bash("PreToolUse", "git push", 3))
+
+    def test_deny_fallback_is_truncated_never_dropped(self):
+        # Both rules match one call; the first fills the output, so the second's pointer must shrink.
+        entry(self.keys_dir, "first", "A" * 1800, command="gh pr create", must_know_before="true")
+        entry(self.keys_dir, "second", "B" * 1500, id="y" * 120, command="gh pr", must_know_before="true")
+        self.fire("UserPromptSubmit", prompt="x")
+        out = self.bash("PreToolUse", "gh pr create", 1)
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertLessEqual(len(out["permissionDecisionReason"].encode()), 2000)
+        serves = {s["entry"]: s for s in self.log()[-1]["serves"]}
+        self.assertEqual(serves["first"]["outcome"], "injected")
+        self.assertEqual((serves["y" * 120]["outcome"], serves["y" * 120]["minimal"],
+                          serves["y" * 120]["truncated"]), ("injected", True, True))
 
     def test_failed_output_releases_the_deny(self):
         entry(self.keys_dir, "pr", "Rule.", command="gh pr create", must_know_before="true")

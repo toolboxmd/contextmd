@@ -30,6 +30,8 @@ from .keys import Keys, glob_regex, normalize_error
 # Claude Code moves hook context over its limit into a file and shows the model
 # a 2 KB preview (canary, #5), so one entry must fit well inside that, in UTF-8 bytes.
 MAX_ENTRY_BYTES = 1800
+# Entry ids appear in logs and in the short deny pointer, which must stay small.
+MAX_ID_CHARS = 120
 KEY_FIELDS = ("command", "path", "error")
 
 
@@ -106,6 +108,8 @@ def parse(path: Path) -> Entry:
         paths=[p for p in fields.get("path", []) if p],
         errors=[normalize_error(e) for e in fields.get("error", []) if e],
     )
+    if len(entry.id) > MAX_ID_CHARS:
+        raise ValueError(f"id is {len(entry.id)} characters, over {MAX_ID_CHARS}")
     if not (entry.commands or entry.paths or entry.errors):
         raise ValueError("no command, path or error key")
     return entry

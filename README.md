@@ -35,6 +35,7 @@ Answer every prompt of the PR template before opening a PR.
 - Keys may repeat; any one match serves the entry. The body must stay under
   1,800 UTF-8 bytes, because Claude Code shows only a 2 KB preview of larger
   hook context.
+- `id` defaults to the file name and must stay within 120 characters.
 - The entry version is a hash of the file, so an edited entry counts as new.
 
 `bin/contextmd-serve check` loads the store and lists bad entries.
@@ -45,7 +46,7 @@ Answer every prompt of the PR template before opening a PR.
 | --- | --- |
 | Session start (`SessionStart`) | The session-start files, outside the turn budget. After compaction or `/clear` a new context epoch starts and the files are served again. |
 | User message (`UserPromptSubmit`) | Starts a new turn and a new 10,000-character budget: 2,000 characters are kept for denies and 8,000 are for served context. |
-| Before a tool call (`PreToolUse`) | A matching `must-know-before` entry denies the call once per entry version per session, with the entry as the reason. The retry passes. Denies use their own pool, so served context never blocks them; a deny that does not fit that pool still denies, naming the entry and its file. |
+| Before a tool call (`PreToolUse`) | A matching `must-know-before` entry denies the call once per entry version per session, with the entry as the reason. The retry passes. Denies use their own pool, so served context never blocks them; a deny that does not fit that pool still denies, naming the entry and its file, cut short if even that would pass the per-output limit. |
 | Tool result or failure (`PostToolUse`, `PostToolUseFailure`) | Other matching entries, as added context. First fit wins within the 8,000-character serve pool and the 2,000-byte limit per hook output; the rest are cut. |
 | Before done (`Stop`) | Logged only; nothing is served yet. |
 

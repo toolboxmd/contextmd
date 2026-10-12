@@ -323,12 +323,19 @@ class Serving:
             text, extra = e.text, {}
             chars, size = cost(text)
             if chars > budget or size > limit:
-                if minimal is None or cost(minimal)[1] > limit:
+                if minimal is None:
                     self._serve(record, e, key, "cut_budget", seam=seam,
                                 cut="turn" if chars > budget else "moment")
                     return False
-                text, extra = minimal, {"minimal": True}  # goes out even past the pool
+                # A deny always goes out: as the short pointer, past the pool if need be,
+                # cut to the bytes left in this output if even that is too long.
+                text, extra = minimal, {"minimal": True}
                 chars, size = cost(text)
+                if size > limit:
+                    room = max(0, limit - (size - len(text.encode())))
+                    text = text.encode()[:room].decode(errors="ignore")
+                    extra["truncated"] = True
+                    chars, size = cost(text)
             budget, limit = budget - chars, limit - size
             parts.append(text)
             self._mark_served(m, turn, e)
