@@ -1,7 +1,6 @@
-"""Serving: deliver stored knowledge before the agent's next decision.
+"""ContextMD serving, knowledge side: stores, the store check, hook install and the serving log.
 
-Host hooks are thin. They turn a host event into a ``Moment``, hand it to
-``Serving.handle`` and print the ``Reply`` in the host's shape. ``Serving``
-owns all state: the per-turn budget, deny-once records, context epochs and the
-per-moment log.
+Matching and serving state (budgets, deny state, settlement and the serving log)
+live in the Chromeria serving module, which reads the stores named in
+``serving.json``.
 """

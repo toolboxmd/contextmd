@@ -12,7 +12,11 @@ Each entry is one ``.md`` file in a store directory::
     Answer every prompt of the PR template before opening a PR.
 
 ``command``, ``path`` and ``error`` may repeat; any one key matching serves the
-entry. ``id`` defaults to the file name. The version is derived from the file
+entry. ``id`` defaults to the file name. A must-know-before entry with
+``target: <file>`` is a pointer rule: its deny names the file, and it lifts once
+the agent is seen reading that file. Without ``target`` it is an inline rule,
+whose text is in the deny itself. A relative target is relative to the entry's
+directory. The version is derived from the file
 bytes, so editing an entry makes it new for deny-once. Store directories are
 usually owner repositories (a Library, the Great Library); the commit each
 was loaded at goes into the serving log.
@@ -33,6 +37,7 @@ MAX_ENTRY_BYTES = 1800
 # Entry ids appear in logs and in the short deny pointer, which must stay small.
 MAX_ID_CHARS = 120
 KEY_FIELDS = ("command", "path", "error")
+OTHER_FIELDS = ("id", "must-know-before", "target")
 
 
 @dataclass
@@ -42,6 +47,7 @@ class Entry:
     text: str
     must_know_before: bool = False
     path: str = ""
+    target: str | None = None
     commands: list[list[str]] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -87,7 +93,7 @@ def parse(path: Path) -> Entry:
         if not sep:
             raise ValueError(f"not a 'name: value' line: {line!r}")
         fields.setdefault(name.strip(), []).append(value.strip())
-    unknown = set(fields) - {"id", "must-know-before", *KEY_FIELDS}
+    unknown = set(fields) - {*OTHER_FIELDS, *KEY_FIELDS}
     if unknown:
         raise ValueError(f"unknown fields: {sorted(unknown)}")
     body = "\n".join(lines[end + 1:]).strip()
@@ -98,12 +104,18 @@ def parse(path: Path) -> Entry:
     flag = (fields.get("must-know-before") or ["false"])[-1].lower()
     if flag not in ("true", "false"):
         raise ValueError("must-know-before is not true or false")
+    target = (fields.get("target") or [None])[-1]
+    if target is not None:
+        if flag != "true":
+            raise ValueError("target is only for must-know-before entries")
+        target = os.path.realpath(os.path.join(path.parent, os.path.expanduser(target)))
     entry = Entry(
         id=(fields.get("id") or [path.stem])[-1],
         version=hashlib.sha256(raw).hexdigest()[:12],
         text=body,
         must_know_before=flag == "true",
         path=str(path),
+        target=target,
         commands=[c.split() for c in fields.get("command", []) if c.split()],
         paths=[p for p in fields.get("path", []) if p],
         errors=[normalize_error(e) for e in fields.get("error", []) if e],
