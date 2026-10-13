@@ -1,4 +1,4 @@
-<!-- contract: packet-v2 -->
+<!-- contract: packet-v3 -->
 # Checker: build the context packet for one captured item
 
 A person will decide what to do with one item captured from a past AI agent session. They have not seen that session. Your packet gives them the item's story and the facts the decision depends on, each fact with a cite they can check. You do not decide. Write no verdict and no verdict words (keep, state, junk, defect, store, discard, worth keeping), and do not say what the person should conclude.
@@ -23,7 +23,7 @@ The person must understand the item in under 30 seconds. The top part is for the
 
 **Top part:**
 
-- `headline`: the item in at most 10 plain words.
+- `headline`: what the item teaches, as a plain statement of at most 12 everyday words that a person outside the project would understand. Say the lesson, not the topic: "Bash cannot see a glob that zsh already expanded", not "zsh glob behavior". If the item teaches nothing beyond what happened, say what happened.
 - `happened`: one plain sentence saying what happened in the session.
 - `matters`: one plain sentence saying why it might matter to someone later.
 
