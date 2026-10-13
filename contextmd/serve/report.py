@@ -1,10 +1,10 @@
 """The serve evidence report: what each served entry did, from the serving log and Agent Observer, no model.
 
 One row per served candidate: every outcome of a settled delivery (``SERVED``), including a deny
-that another hook's deny replaced (``hidden``):
+whose text Chromeria's check did not find in the call's recorded output (``hidden``):
 
-- ``shown``: ``yes`` when Chromeria saw the deny text in what the model was shown, ``no`` when another
-  hook's deny replaced it, ``unproven`` otherwise (every context serve today, and denies on hosts
+- ``shown``: ``yes`` when Chromeria found the deny text in the call's recorded output, ``no`` when its
+  check did not find it there, ``unproven`` otherwise (every context serve today, and denies on hosts
   without that check or whose check never arrived);
 - ``lift``: for a deny, how its rule lifted (``read``, ``delivered_inline``, ``not_read_capped``),
   ``open`` when the session went on without that, or ``pending`` when nothing came after it yet;
@@ -160,8 +160,8 @@ CARDS = [
      "A before-action rule was served after its own command had already run.",
      "It came too late for that action and used the turn's serve budget (toolboxmd/chromeria#231)."),
     ("Hidden", lambda r: r["shown"] == "no", "serves",
-     "The call was denied, but the deny text the model was shown did not contain this rule.",
-     "The rule did not reach the agent and stays armed; on Grok some may be misread (toolboxmd/chromeria#228)."),
+     "Chromeria's check did not find this rule's text in the output recorded for the denied call.",
+     "The rule may not have reached the agent and stays armed; on Grok the check misfires (toolboxmd/chromeria#228)."),
     ("Passed without reading", lambda r: r["lift"] == "not_read_capped", "rules",
      "A rule reached its cap of three denies without a read of the pointed file, so it stopped blocking.",
      "Where a deny was proven shown, the agent skipped the rule; otherwise it may never have seen it."),

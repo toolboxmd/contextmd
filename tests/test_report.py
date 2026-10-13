@@ -177,7 +177,9 @@ class ReportTest(unittest.TestCase):
         self.assertEqual([r["late"] for r in self.rows()], [False, True, False])
 
     def test_carries_printed_together_keep_their_own_origin(self):
-        self.log.serve(seam="deny", checked="shown", lift="read", session="a")  # makes the entry must-know
+        # Both entries are must-know, so a carry given the other's origin would flip its `late`.
+        self.log.serve(seam="deny", checked="shown", lift="read", session="a")
+        self.log.serve(seam="deny", checked="shown", lift="read", session="b", entry="other-fact")
         on_prompt = self.log.carry(kind="user_message", session="g1", entry="other-fact")
         on_result = self.log.carry(kind="tool_result", session="g1")
         self.log.serve(seam="carry_print", harness="grok", session="g1", entry="other-fact",
@@ -186,7 +188,7 @@ class ReportTest(unittest.TestCase):
                        carried_from=on_result, delivery="batch", at=1001.0)
         self.assertEqual([(r["entry"], r["late"]) for r in self.rows()],
                          [("agentsmd-version-control", False), ("other-fact", False),
-                          ("agentsmd-version-control", True)])
+                          ("other-fact", False), ("agentsmd-version-control", True)])
 
     def test_cards_claim_shown_or_ignored_only_with_proof(self):
         for at in (1000.0, 1001.0, 1002.0):  # capped, but no deny was proven shown
