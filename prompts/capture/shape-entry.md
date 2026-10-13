@@ -1,7 +1,7 @@
 <!-- contract: shape-entry-v1 -->
 # Shape: turn one kept lesson into an exact-key entry
 
-A capture pass kept a lesson from a past AI agent session. Write it as one ContextMD exact-key entry: a short rule that is shown to a future agent when its command, path or error matches a key.
+A capture pass kept a lesson from a past AI agent session. Write it as one ContextMD exact-key entry: a short rule that is shown to a future agent when a command it runs matches the entry's key.
 
 ## Input
 

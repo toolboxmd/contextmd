@@ -135,8 +135,8 @@ def _check_entry(fields: dict, body: str) -> None:
             raise Refused(f"absolute target {target!r}: use ~/... or a path relative to the entry")
     if fields.get("path") or fields.get("error"):
         raise Refused("only command keys can be checked against tool input; path and error keys are not applied yet")
-    if not fields.get("command"):
-        raise Refused("entry has no command key")
+    if not fields.get("command") or not all(c.split() for c in fields["command"]):
+        raise Refused("entry has no command key, or a blank one")
 
 
 def _words(command: str) -> list[str]:

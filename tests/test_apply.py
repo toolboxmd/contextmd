@@ -160,6 +160,9 @@ class ApplyTest(unittest.TestCase):
         self.assert_refused(ENTRY.split("---\n")[0] + "---\n" + ENTRY.split("---\n")[1] + "---\n" + body + "\n",
                             "1,800")
 
+    def test_blank_command_key_is_refused(self):
+        self.assert_refused(ENTRY.replace("command: chromeria-v2.sqlite", "command:"), "no command key")
+
     def test_only_kept_items_are_applied(self):
         write_json(self.inbox_item, {**self.item, "grade": "state"})
         self.assert_refused(None, "keep")
