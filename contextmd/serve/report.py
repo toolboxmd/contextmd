@@ -20,15 +20,15 @@ anchored rows, and only trusts ``ignored`` where ``shown`` is ``yes``.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
-import subprocess
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
 SERVED = ("injected", "truncated", "unverified", "awaiting_evidence", "hidden")
 CANARY_PREFIX = "live-canary-"  # the per-host canary entries (#21); test serves, not use
-OBSERVER_LIMIT = 1_000_000
+DEFAULT_LEDGER = "~/.local/state/agent-observer/observer.db"  # Agent Observer's default
 
 
 class LogError(Exception):
@@ -36,19 +36,45 @@ class LogError(Exception):
 
 
 class Observer:
-    """Agent Observer's read-only ``trace``, one call per session, cached."""
+    """Agent Observer's ledger, opened read-only, one query per session, cached.
 
-    def __init__(self, command: str = "agent-observer"):
-        self.command = command
+    Observer's ``trace`` command opens the ledger read-write (it may create, migrate or write
+    schema rows), so the report reads the ledger itself with SQLite ``mode=ro``: it never
+    creates, migrates or changes it. Only the schema it was written for is read.
+    """
+
+    SCHEMAS = ("3",)  # Agent Observer 1.0.1
+
+    def __init__(self, ledger: Path | None = None):
+        self.ledger = Path(ledger or os.environ.get("AGENT_OBSERVER_DB") or DEFAULT_LEDGER).expanduser()
         self.cache: dict[str, list[dict] | None] = {}
+        self._db: sqlite3.Connection | None = None
+        self.error: str | None = None
+
+    def connect(self) -> sqlite3.Connection | None:
+        if self._db is None and self.error is None:
+            try:
+                if not self.ledger.is_file():
+                    raise sqlite3.OperationalError(f"no Observer ledger at {self.ledger}")
+                db = sqlite3.connect(f"{self.ledger.absolute().as_uri()}?mode=ro", uri=True)
+                db.row_factory = sqlite3.Row
+                row = db.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+                if row is None or row[0] not in self.SCHEMAS:
+                    db.close()
+                    raise sqlite3.OperationalError(f"Observer ledger schema {row and row[0]} is not one of {self.SCHEMAS}")
+                self._db = db
+            except sqlite3.Error as exc:
+                self.error = str(exc)
+        return self._db
 
     def events(self, session_key: str) -> list[dict] | None:
         if session_key not in self.cache:
+            db = self.connect()
             try:
-                out = subprocess.run([self.command, "trace", "--session", session_key, "--json",
-                                      "--limit", str(OBSERVER_LIMIT)], capture_output=True, text=True, timeout=60)
-                self.cache[session_key] = json.loads(out.stdout)["events"] if out.returncode == 0 else None
-            except (OSError, subprocess.TimeoutExpired, ValueError, KeyError):
+                self.cache[session_key] = None if db is None else [dict(r) for r in db.execute(
+                    """SELECT id, family, native_id, ts, ordinal_num, name, target FROM events
+                       WHERE session_key = ? ORDER BY COALESCE(ts, 0), ordinal_num""", (session_key,))]
+            except sqlite3.Error:
                 self.cache[session_key] = None
         return self.cache[session_key]
 
@@ -58,9 +84,9 @@ def evidence(observer: Observer, harness: str, session: str, tool_use_id: str | 
     events = observer.events(f"{harness}:{session}")
     if events is None:
         return "observer_failed", None
-    for e in events:
-        if tool_use_id and e.get("native_id") == tool_use_id:
-            return "anchored", e["id"]
+    calls = [e for e in events if tool_use_id and e.get("native_id") == tool_use_id]
+    if calls:  # the call itself, not its result or another event of the same id
+        return "anchored", min(calls, key=lambda e: (e["family"] != "tool_call", e["id"]))["id"]
     if not events or max(e.get("ts") or 0 for e in events) < at:
         return "not_imported", None
     return "no_native_record", None
@@ -155,10 +181,13 @@ def render(served: list[dict], canaries: int) -> str:
     entries = Counter(r["entry"] for r in served)
     head = [f"# Serve evidence: {len(served)} serve{'s' if len(served) != 1 else ''}"
             f" of {len(entries)} entr{'ies' if len(entries) != 1 else 'y'}"]
-    if served:
+    left_out = f"{canaries} canary serve{'s' if canaries != 1 else ''} left out."
+    if not served:
+        head.append(left_out)
+    else:
         start = datetime.fromtimestamp(served[0]["at"], timezone.utc).strftime("%Y-%m-%d %H:%M")
         end = datetime.fromtimestamp(served[-1]["at"], timezone.utc).strftime("%Y-%m-%d %H:%M")
-        head.append(f"From {start} to {end} UTC; {canaries} canary serve{'s' if canaries != 1 else ''} left out.")
+        head.append(f"From {start} to {end} UTC; {left_out}")
         head.append(f"By seam: {_top(Counter(r['seam'] for r in served))}. "
                     f"By host: {_top(Counter(r['harness'] for r in served))}.")
     parts = ["\n".join(head)]

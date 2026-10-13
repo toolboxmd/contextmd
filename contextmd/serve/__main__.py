@@ -37,7 +37,8 @@ def main(argv=None) -> int:
     rp = sub.add_parser("report")
     rp.add_argument("--base", required=True, type=Path)
     rp.add_argument("--since", help="ISO date or time, UTC unless it names a zone")
-    rp.add_argument("--observer", default="agent-observer", help="Agent Observer's command")
+    rp.add_argument("--observer-db", type=Path, help="Agent Observer's ledger, read-only"
+                    " (default: $AGENT_OBSERVER_DB, else Observer's default path)")
     rp.add_argument("--json", action="store_true", help="one JSON row per serve instead of cards")
     ns = ap.parse_args(argv)
     if ns.cmd == "check":
@@ -67,7 +68,7 @@ def main(argv=None) -> int:
             print(f"contextmd-serve report: --since needs an ISO date or time, not {ns.since!r}")
             return 2
         try:
-            served, canaries = report.rows(db, report.Observer(ns.observer), since)
+            served, canaries = report.rows(db, report.Observer(ns.observer_db), since)
         except report.LogError as exc:
             print(f"contextmd-serve report: {exc}")
             return 1

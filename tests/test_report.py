@@ -30,19 +30,28 @@ CREATE TABLE carries (id INTEGER PRIMARY KEY, harness TEXT NOT NULL, session TEX
   candidate_id INTEGER NOT NULL, state TEXT NOT NULL, delivery TEXT, created_at REAL NOT NULL);
 """
 
-# A fake Agent Observer: `trace --session KEY --json --limit N` prints that session's events.
-FAKE_OBSERVER = """#!/usr/bin/env python3
-import json, sys
-from pathlib import Path
-args = sys.argv[1:]
-data = json.loads((Path(__file__).parent / "observer.json").read_text())
-if data.get("fail"):
-    sys.exit(2)
-assert args[0] == "trace", args
-key = args[args.index("--session") + 1]
-limit = int(args[args.index("--limit") + 1])
-print(json.dumps({"_view": "trace", "events": data["sessions"].get(key, [])[:limit]}))
+# Agent Observer's ledger tables the report reads, as Observer 1.0.1 (schema 3) creates them.
+LEDGER_SCHEMA = """
+CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER, session_key TEXT NOT NULL DEFAULT '',
+  ordinal_num INTEGER, ts REAL, family TEXT NOT NULL, native_id TEXT NOT NULL, turn_id TEXT, name TEXT,
+  target TEXT, status TEXT, duration_ms INTEGER, size_bytes INTEGER, truncated INTEGER, fingerprint TEXT,
+  detail_json TEXT, UNIQUE (session_key, family, native_id));
+CREATE TABLE user_messages (
+  native_id TEXT PRIMARY KEY, alias_id TEXT, source_id INTEGER, session_key TEXT, turn_id TEXT,
+  ordinal_num INTEGER, ts REAL, kind TEXT NOT NULL DEFAULT 'genuine', text_hash TEXT NOT NULL,
+  text_excerpt TEXT NOT NULL, is_genuine INTEGER NOT NULL);
 """
+
+
+def ledger(path, version="3"):
+    """An Observer ledger fixture; returns an open connection for adding events."""
+    db = sqlite3.connect(path)
+    db.executescript(LEDGER_SCHEMA)
+    db.execute("INSERT INTO schema_meta VALUES ('schema_version', ?)", (version,))
+    db.commit()
+    return db
 
 
 class Log:
@@ -100,24 +109,23 @@ class ReportTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         (self.tmp / "userdata").mkdir()
         self.log = Log(self.tmp / "userdata" / "contextmd.sqlite")
-        self.observer = self.tmp / "agent-observer"
-        self.observer.write_text(FAKE_OBSERVER)
-        self.observer.chmod(0o755)
-        self.events = {}
+        self.ledger_path = self.tmp / "observer.db"
+        self.ledger = ledger(self.ledger_path)
 
-    def run_report(self, *extra):
-        (self.tmp / "observer.json").write_text(json.dumps({"sessions": self.events}))
+    def run_report(self, *extra, db=None):
         out = subprocess.run([sys.executable, str(BIN), "report", "--base", str(self.tmp),
-                              "--observer", str(self.observer), *extra], capture_output=True, text=True)
+                              "--observer-db", str(db or self.ledger_path), *extra], capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr)
         return out.stdout
 
     def rows(self, *extra):
         return [json.loads(line) for line in self.run_report("--json", *extra).splitlines()]
 
-    def see(self, session, tool_use_id, ts=1000.5, harness="claude"):
-        events = self.events.setdefault(f"{harness}:{session}", [])
-        events.append({"id": 100 + len(events), "native_id": tool_use_id, "ts": ts, "family": "tool_call"})
+    def see(self, session, tool_use_id, ts=1000.5, harness="claude", family="tool_call"):
+        cur = self.ledger.execute("INSERT INTO events (session_key, ts, family, native_id) VALUES (?, ?, ?, ?)",
+                                  (f"{harness}:{session}", ts, family, tool_use_id))
+        self.ledger.commit()
+        return cur.lastrowid
 
     def test_every_served_outcome_is_counted_and_unserved_ones_are_not(self):
         for n, outcome in enumerate(["injected", "truncated", "unverified", "awaiting_evidence", "hidden",
@@ -202,18 +210,47 @@ class ReportTest(unittest.TestCase):
         rows = self.rows()
         self.assertEqual([r["evidence"] for r in rows],
                          ["anchored", "not_imported", "not_imported", "no_native_record"])
-        self.assertEqual(rows[0]["event_id"], 100)
+        self.assertEqual(rows[0]["event_id"], 1)
         self.assertTrue(all(r["event_id"] is None for r in rows[1:]))
 
     def test_an_observer_failure_is_reported_not_hidden(self):
         self.log.serve()
-        (self.tmp / "observer.json").write_text(json.dumps({"fail": True}))
-        out = subprocess.run([sys.executable, str(BIN), "report", "--base", str(self.tmp),
-                              "--observer", str(self.observer), "--json"], capture_output=True, text=True)
-        self.assertEqual(json.loads(out.stdout)["evidence"], "observer_failed")
+        missing = self.tmp / "absent" / "observer.db"
+        rows = [json.loads(line) for line in self.run_report("--json", db=missing).splitlines()]
+        self.assertEqual(rows[0]["evidence"], "observer_failed")
+        self.assertFalse(missing.exists())  # a read-only report never creates Observer's ledger
+        self.assertFalse(missing.parent.exists())
+
+    def test_the_report_never_writes_the_observer_ledger(self):
+        self.see("a", self.log.serve(session="a"))
+        self.log.serve(session="b")
+        self.ledger.close()
+        def state():
+            return (self.ledger_path.read_bytes(), self.ledger_path.stat().st_mtime_ns,
+                    self.ledger_path.stat().st_mode, sorted(p.name for p in self.tmp.iterdir()))
+        before = state()
+        self.assertEqual([r["evidence"] for r in self.rows()], ["anchored", "not_imported"])
+        self.run_report()
+        self.assertEqual(state(), before)
+
+    def test_another_ledger_schema_is_not_read_or_migrated(self):
+        self.log.serve()
+        old = self.tmp / "old.db"
+        ledger(old, version="2").close()
+        before = old.read_bytes()
+        rows = [json.loads(line) for line in self.run_report("--json", db=old).splitlines()]
+        self.assertEqual(rows[0]["evidence"], "observer_failed")
+        self.assertEqual(old.read_bytes(), before)
+
+    def test_the_anchor_is_the_tool_call_when_its_result_shares_the_id(self):
+        tool = self.log.serve(session="a")
+        self.see("a", tool, family="tool_result")
+        call = self.see("a", tool, family="tool_call")
+        self.assertEqual(self.rows()[0]["event_id"], call)
 
     def test_canary_serves_are_left_out(self):
         self.log.serve(entry="live-canary-deny", session="a")
+        self.assertIn("1 canary serve left out", self.run_report())  # also when nothing else was served
         self.log.serve(session="b")
         self.assertEqual([r["entry"] for r in self.rows()], ["agentsmd-version-control"])
         self.assertIn("1 canary serve left out", self.run_report())
@@ -253,14 +290,14 @@ class ReportTest(unittest.TestCase):
         self.log.serve()
         for args, words in ((["--since", "yesterday"], "--since"),):
             out = subprocess.run([sys.executable, str(BIN), "report", "--base", str(self.tmp),
-                                  "--observer", str(self.observer), *args], capture_output=True, text=True)
+                                  "--observer-db", str(self.ledger_path), *args], capture_output=True, text=True)
             self.assertNotEqual(out.returncode, 0)
             self.assertIn(words, out.stdout + out.stderr)
             self.assertNotIn("Traceback", out.stderr)
         self.log.db.execute("DROP TABLE deny_state")
         self.log.db.commit()
         out = subprocess.run([sys.executable, str(BIN), "report", "--base", str(self.tmp),
-                              "--observer", str(self.observer)], capture_output=True, text=True)
+                              "--observer-db", str(self.ledger_path)], capture_output=True, text=True)
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("serving log", out.stdout + out.stderr)
         self.assertNotIn("Traceback", out.stderr)

@@ -176,8 +176,13 @@ model. It covers every serve the hook settled (`injected`, `truncated`,
 
 Without `--json` it prints one short card per problem it finds: what happened,
 why it matters, then the counts. Canary entries (`live-canary-*`) are left
-out. The report reads Agent Observer with `agent-observer trace` (`--observer`
-names another command) and changes nothing.
+out. The report changes nothing. It opens Agent Observer's ledger read-only
+with SQLite, because Observer's `trace` command opens it read-write
+(toolboxmd/agent-observer#73). The ledger path comes from `--observer-db`,
+else `$AGENT_OBSERVER_DB`, else Observer's default
+`~/.local/state/agent-observer/observer.db`. The report reads only ledger
+schema 3 (Observer 1.0.1); with any other schema every serve is
+`observer_failed`.
 
 Run the tests with `python3 -m unittest discover -s tests -t .`. The contract
 suite in `tests/test_contract.py` runs the real hook against a Chromeria dev
