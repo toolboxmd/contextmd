@@ -39,6 +39,40 @@ class SegmentsTest(unittest.TestCase):
         for command in ["gh pr list", "gh issue create", "ghx pr create", "echo gh pr", "gh pr createx"]:
             self.assertFalse(hit(command), command)
 
+    def test_command_key_follows_what_bash_runs_not_mentions(self):
+        # Same cases as Chromeria's Matcher.ts (toolboxmd/chromeria#232, #243).
+        def hit(command, key="gh pr create"):
+            e = store.Entry("e", "v", "t", commands=[key.split()])
+            return e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+        for command in ["zsh -lc 'gh pr create --fill'", '/bin/bash -c "cd x && gh pr create"',
+                        "cat > notes.md <<'EOF'\nhello\nEOF\ngh pr create",
+                        "gh pr create --title \"x\" --body-file - <<'EOF'\nbody\nEOF",
+                        "cat <<EOF\n$(gh pr create)\nEOF", "cat <<EOF\n`gh pr create`\nEOF",
+                        "bash -c \"'gh' pr create\"", "'gh' pr create", '"gh" pr create --fill', "g'h' pr create"]:
+            self.assertTrue(hit(command), command)
+        for command in ['echo "live check: gh pr create"', "echo 'gh pr create'",
+                        "cat <<'EOF'\nthen run gh pr create\nEOF", "python3 - <<'PY'\nkeys = ['gh pr create']\nPY",
+                        "python3 -c \"print('gh pr create')\"", 'gh issue create --title t --body "open it with gh pr create"',
+                        "cat <<'EOF'\n$(gh pr create)\nEOF", 'cat <<"EOF"\n$(gh pr create)\nEOF',
+                        'echo "\\$(gh pr create)"', 'echo "\\`gh pr create\\`"', "cat <<EOF\nrun gh pr create later\nEOF"]:
+            self.assertFalse(hit(command), command)
+        db = lambda command: hit(command, "chromeria-v2.sqlite")
+        for command in ["sqlite3 chromeria-v2.sqlite .tables", "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
+                        "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite 'select 1'"]:
+            self.assertTrue(db(command), command)
+        self.assertFalse(db('sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables'))
+
+    def test_command_after_an_empty_heredoc_still_matches(self):
+        # Sol review of #52: the terminator right at the body's start must end the heredoc.
+        def hit(command):
+            e = store.Entry("e", "v", "t", commands=[["gh", "pr", "create"]])
+            return e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+        for command in ["cat <<'EOF'\nEOF\ngh pr create", "cat <<EOF\nEOF\ngh pr create",
+                        "cat <<A <<B\nA\nB\ngh pr create", "cat <<A <<'B'\nx\nA\nB\ngh pr create",
+                        "cat <<'A'\nA\ncat <<'B'\nB\ngh pr create"]:
+            self.assertTrue(hit(command), command)
+        self.assertFalse(hit("cat <<'A'\nA\ncat <<'B'\ngh pr create\nB"))
+
     def test_path_key_matches_files_a_shell_command_names(self):
         # As Chromeria's Matcher.ts (toolboxmd/chromeria#234).
         e = store.Entry("e", "v", "t", paths=["**/chromeria-v2.sqlite"])
