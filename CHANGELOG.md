@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.2] - 2026-10-13
+
+### Changed
+
+- Cue entry examples point to AgentsMD's renamed procedures/ folder (toolboxmd/agentsmd#218)
+
 ## [0.5.1] - 2026-10-13
 
 ### Changed

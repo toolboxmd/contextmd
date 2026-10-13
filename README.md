@@ -61,7 +61,7 @@ lie inside an exact-key directory (each loader rejects the other's fields):
 id: agentsmd-research
 name: Research
 applies: The request asks a question whose answer is facts beyond what is at hand. Not: ...
-target: ../skills/operations/workflows/research/index.md
+target: ../skills/operations/procedures/research/index.md
 ---
 AgentsMD: follow the research procedure.
 ```
