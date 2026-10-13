@@ -52,6 +52,8 @@ def main(argv=None) -> int:
     hp.add_argument("--config", type=Path, help="health configuration (default ~/.config/contextmd/health.json)")
     hp.add_argument("--state", type=Path, help="stored window (default ~/.local/state/contextmd/health.json)")
     hp.add_argument("--gh", default="gh", help="the GitHub CLI")
+    hp.add_argument("--observer-db", type=Path, help="Agent Observer's ledger, read-only"
+                    " (default: $AGENT_OBSERVER_DB, else Observer's default path)")
     hp.add_argument("--now", help=argparse.SUPPRESS)
     cp = sub.add_parser("card")
     cp.add_argument("--base", required=True, type=Path)
@@ -145,7 +147,7 @@ def main(argv=None) -> int:
 def _health(ns, base: Path) -> int:
     from datetime import datetime, timezone
 
-    from . import health, report
+    from . import health, measures, report
     try:
         now = report.parse_since(ns.now) if ns.now else datetime.now(timezone.utc).timestamp()
         start, end = report.parse_since(ns.start), report.parse_since(ns.end)
@@ -162,6 +164,16 @@ def _health(ns, base: Path) -> int:
     if not sliced:
         start, end = health.window(state, db, now), now
     result = health.measure(db, start, end, cfg["expected_harnesses"], now)
+    if not result.unreadable:
+        try:
+            current = measures.measure(db, ns.observer_db, start, end)
+            previous = measures.measure(db, ns.observer_db, 2 * start - end, start)
+        except measures.ObserverError as exc:
+            print(health.report(result, cfg["expected_harnesses"], cfg["machine"]))
+            print(f"contextmd-serve health: Agent Observer's ledger is unreadable: {exc}")
+            return 1
+        result.measures = measures.render(current, previous)
+        result.findings += [health.Finding(cls, rows) for cls, rows in measures.findings(current, previous)]
     print(health.report(result, cfg["expected_harnesses"], cfg["machine"]))
     try:
         actions = health.file(result, health.GitHub(ns.gh, ns.dry_run), cfg["machine"], cfg["seed"])

@@ -1,0 +1,7 @@
+[Unit]
+Description=ContextMD daily serving health check (toolboxmd/contextmd#40, #57)
+
+[Service]
+Type=oneshot
+WorkingDirectory=@DEPLOYED@
+ExecStart=@PYTHON@ @DEPLOYED@/bin/contextmd-serve health --base @BASE@ --gh @GH@

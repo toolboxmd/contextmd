@@ -1,7 +1,7 @@
 # Daily serving health check: deployment
 
 `contextmd-serve health` (toolboxmd/contextmd#40) runs once a day on each
-machine that serves, as a user launchd job. This file is the canonical
+machine that serves, as a user launchd job on macOS or a systemd user timer on Linux. This file is the canonical
 source for that job under AgentsMD ADR 0001 (persistent host automation).
 The machine's own record (which commit is deployed, when, and the first
 run's output) belongs in that machine's private runbook.
@@ -12,6 +12,7 @@ run's output) belongs in that machine's private runbook.
 | --- | --- | --- | --- |
 | `bin/` and `contextmd/` at commit `<sha>` | `~/.local/share/contextmd/deployed/<sha>/` (a copy from `git archive`, never a link into a checkout) | user, `0755` directories, `0644` files, `0755` for `bin/contextmd-serve` | none; each run starts a new process |
 | `deploy/health/com.toolboxmd.contextmd-health.plist.template` | `~/Library/LaunchAgents/com.toolboxmd.contextmd-health.plist`, with the placeholders filled | user, `0644` | `launchctl bootout` and `bootstrap` of this label only |
+| `deploy/health/contextmd-health.service.template` and `contextmd-health.timer.template` (Linux) | `~/.config/systemd/user/contextmd-health.service` and `.timer`, with the placeholders filled | user, `0644` | `systemctl --user` on these two units only; never `contextmd-cue.service` |
 | configuration (no secrets): `{"machine": "<label>", "expected_harnesses": ["claude", "codex", "grok", "opencode"], "seed": {}}` | `~/.config/contextmd/health.json` | user, `0644` | read on each run |
 | state, written by the job | `~/.local/state/contextmd/health.json` | user, `0644` | none |
 
@@ -38,17 +39,23 @@ Secrets: none in these files. Filing uses the user's own `gh` login. If
    `git archive <sha> bin contextmd | tar -x -C ~/.local/share/contextmd/deployed/<sha>`.
 5. Fill and install the plist, then run
    `plutil -lint ~/Library/LaunchAgents/com.toolboxmd.contextmd-health.plist`.
+   On Linux, fill and install both systemd templates instead, then run
+   `systemd-analyze --user verify ~/.config/systemd/user/contextmd-health.service`.
 6. The first run looks back 24 hours. To leave out an incident that is
    already fixed and tracked, start the window at install time:
    `{"<base>/userdata/contextmd.sqlite": {"window_end": <epoch seconds>}}` in
    the state file.
 7. Load the job:
    `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.toolboxmd.contextmd-health.plist`.
+   On Linux: `systemctl --user daemon-reload` and
+   `systemctl --user enable --now contextmd-health.timer`; the user needs
+   linger (`loginctl enable-linger`) for the timer to run while logged out.
 
 ## Health proof
 
 `launchctl kickstart gui/$(id -u)/com.toolboxmd.contextmd-health` runs it
-now. The out log shows the report (`Serving health on <machine>: ...`) and
+now (Linux: `systemctl --user start contextmd-health.service`, report in
+`journalctl --user -u contextmd-health`). The out log shows the report (`Serving health on <machine>: ...`) and
 any `filed` or `commented` lines. The state file's `window_end` moves to the
 run's time. The err log stays empty.
 
@@ -61,8 +68,15 @@ template. Report missing and unmatched files; do not repair them in place.
 
 ## Rollback
 
+Stop the job and any run in progress first, and check it stopped:
 `launchctl bootout gui/$(id -u)/com.toolboxmd.contextmd-health`, then
-restore the backed-up plist (or remove it), configuration and state. Point
+`launchctl print gui/$(id -u)/com.toolboxmd.contextmd-health` finds nothing.
+On Linux: `systemctl --user disable --now contextmd-health.timer`, then
+`systemctl --user stop contextmd-health.service`, and `systemctl --user
+is-active contextmd-health.timer contextmd-health.service` reports both
+inactive. Then restore the backed-up plist (or remove it), configuration and state. Point
 `@DEPLOYED@` back at the previous `<sha>` directory if one existed,
-`bootstrap` again, and rerun the health proof. Issues the job filed stay
+`bootstrap` (or `enable --now` the timer) again, and rerun the health proof.
+Where no job existed before, remove the new units, configuration and state
+instead. Issues the job filed stay
 open; close any false ones by hand.

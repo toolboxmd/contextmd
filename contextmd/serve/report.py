@@ -38,9 +38,9 @@ class LogError(Exception):
 class Observer:
     """Agent Observer's ledger, opened read-only, one query per session, cached.
 
-    Observer's ``trace`` command opens the ledger read-write (it may create, migrate or write
-    schema rows), so the report reads the ledger itself with SQLite ``mode=ro``: it never
-    creates, migrates or changes it. Only the schema it was written for is read.
+    The report reads the ledger itself with SQLite ``mode=ro``: it never creates, migrates or
+    changes it, and it does not depend on Observer's CLI. Only the schema it was written for is
+    read.
     """
 
     SCHEMAS = ("3",)  # Agent Observer 1.0.1
