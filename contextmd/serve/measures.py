@@ -14,8 +14,9 @@ From the serving log, per harness and moment kind:
 
 From Agent Observer's ledger, read ``mode=ro``, over the health window two hours back: tool calls
 (Codex: completed shell execs, the ``exec-`` tool results its hook names) inside their session's
-first-to-last logged moment, in sessions whose every Observer source was imported after that
-session's last moment in the window with no unread tail. A call whose pre-tool row is
+first-to-last logged moment, in sessions whose every Observer source was imported at or after that
+session's served activity in the window (its last moment, or the window's end while the session goes on)
+with no unread tail; a session with no Observer source is not judged. A call whose pre-tool row is
 ``over_budget`` is a server cut; a call with no pre-tool row of any status is *no pre-tool row*,
 cause unknown. Everything not judged is counted and printed, never counted as lost.
 
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from fractions import Fraction
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +36,7 @@ from pathlib import Path
 KINDS = {"user_message": "user message", "tool_result": "tool result", "tool_failure": "tool failure"}
 SERVER_KINDS = {"pre_tool": "pre-tool", "tool_result": "tool result", "user_message": "user message"}
 UNAVAILABLE = ("not_called", "connect_failed")
-BAR, FLOOR, RISE = 0.02, 10, 0.05
+BAR, FLOOR, RISE = Fraction(2, 100), 10, Fraction(5, 100)  # exact, so 15% - 10% is 5 points
 OBSERVER_LAG = 2 * 3600  # Observer's window trails the health window, so the ledger has caught up
 PRE_TOOL_LOOKBACK = 24 * 3600  # a Codex exec's result can come long after its pre-tool moment
 MAX_IDS = 10
@@ -51,7 +53,7 @@ class Measures:
     has_cue: bool = False
     cue: dict = field(default_factory=dict)  # (harness, kind) -> counts, ids and round trip
     server: dict = field(default_factory=dict)  # (harness, kind) -> (p50, p90, max) ms
-    over_budget: Counter = field(default_factory=Counter)
+    over_budget: Counter = field(default_factory=Counter)  # (harness, kind or None) -> cuts
     replies: dict = field(default_factory=dict)  # harness -> (unconfirmed, served)
     observer: dict = field(default_factory=dict)  # harness -> judged, cut, gap, ids
     excluded: Counter = field(default_factory=Counter)
@@ -108,8 +110,9 @@ def _serving(db: sqlite3.Connection, m: Measures) -> None:
         if kind in SERVER_KINDS:
             durations[(harness or "unknown", kind)].append(s * 1000)
     m.server = {k: (nearest_rank(v, 0.5), nearest_rank(v, 0.9), max(v)) for k, v in durations.items()}
-    m.over_budget = Counter(h or "unknown" for (h,) in db.execute(
-        "SELECT harness FROM moments WHERE status = 'over_budget' AND received_at >= ? AND received_at < ?", window))
+    m.over_budget = Counter((h or "unknown", kind) for h, kind in db.execute(
+        "SELECT harness, kind FROM moments WHERE status = 'over_budget' AND received_at >= ? AND received_at < ?",
+        window))
     if "settled_at" in _columns(db, "deliveries"):
         for harness, unconfirmed, served in db.execute(
                 """SELECT harness, sum(stage != 'settled'), count(*) FROM deliveries WHERE status = 200
@@ -143,10 +146,11 @@ def _observed(db: sqlite3.Connection, ledger: sqlite3.Connection, m: Measures) -
         raise ObserverError(str(exc)) from exc
     m.excluded["sourceless"] = sum(1 for (_, s) in last if s not in sources)
     stale = set()
-    for (h, s), at in last.items():
-        imported, tail = sources.get(s, (None, None))
-        if imported is not None and (imported < at or tail):
-            stale.add((h, s))
+
+    def synced(harness: str, session: str, span: tuple) -> bool:
+        """Every Observer source of the session imported after its served activity in the window, fully read."""
+        imported, tail = sources.get(session, (None, None))
+        return imported is not None and not tail and imported >= min(span[1], end)
     for eid, key, family, call, ts in events:
         harness, _, session = key.partition(":")
         wanted = (family == "tool_result" and call.startswith("exec-")) if harness == "codex" else family == "tool_call"
@@ -159,7 +163,8 @@ def _observed(db: sqlite3.Connection, ledger: sqlite3.Connection, m: Measures) -
         if not span[0] <= ts <= span[1]:
             m.excluded["outside"] += 1
             continue
-        if (harness, session) in stale:
+        if not synced(harness, session, span):
+            stale.add((harness, session))
             m.excluded["not_synced"] += 1
             continue
         o = m.observer.setdefault(harness, {"judged": 0, "cut": 0, "gap": 0, "ids": []})
@@ -187,14 +192,14 @@ def rates(m: Measures) -> dict:
 
 
 def over_bar(count: int, total: int) -> bool:
-    return total > 0 and count >= FLOOR and count / total > BAR
+    return total > 0 and count >= FLOOR and Fraction(count, total) > BAR
 
 
 def regressed(now: tuple, before: tuple | None) -> bool:
     count, total, _ = now
     if not over_bar(count, total) or before is None or before[1] == 0:
         return False
-    rate, previous = count / total, before[0] / before[1]
+    rate, previous = Fraction(count, total), Fraction(before[0], before[1])
     return previous <= BAR or rate - previous >= RISE
 
 
@@ -223,18 +228,19 @@ def _rate(count: int, total: int) -> str:
     return text + (" *" if over_bar(count, total) else "")
 
 
-def _previous(names: list[str], label: str, before: dict) -> str:
-    parts = []
-    for name in names:
-        prev = before.get((name, label))
-        if prev is None or prev[1] == 0:
-            return "previous unavailable"
-        parts.append(f"{name.split('/')[1]} {prev[0] / prev[1]:.1%}")
-    return "previous " + ", ".join(parts)
+def _previous(names: list[str], label: str, before: dict, why: str) -> str:
+    """The previous window's rates; ``-`` for a rate with no moments then, ``why`` when none has any."""
+    prevs = [before.get((name, label)) for name in names]
+    if not any(p and p[1] for p in prevs):
+        return f"previous unavailable: {why}"
+    return "previous: " + ", ".join(f"{name.split('/')[1]} {p[0] / p[1]:.1%}" if p and p[1]
+                                    else f"{name.split('/')[1]} -" for name, p in zip(names, prevs))
 
 
 def render(current: Measures, previous: Measures) -> list[str]:
     before = _comparable(previous)
+    cue_why = ("no Cue moments of this kind in the previous window" if previous.has_cue
+               else "no Cue statuses in the previous window")
     lines = []
     for (harness, kind), c in sorted(current.cue.items()):
         available = c["scored"] - c["unavailable"]
@@ -245,20 +251,24 @@ def render(current: Measures, previous: Measures) -> list[str]:
         lines.append(
             f"Cue {label}: scored {c['scored']}, unavailable {_rate(c['unavailable'], c['scored'])}, available"
             f" {available}, timeout {_rate(c['timeout'], available)}, lost {_rate(c['lost'], available)}, ok"
-            f" {c['ok']}{other}; {rt}; {_previous(['cue/timeout', 'cue/lost'], label, before)}")
+            f" {c['ok']}{other}; {rt}; {_previous(['cue/unavailable', 'cue/timeout', 'cue/lost'], label, before, cue_why)}")
     if current.cue:
         lines.append("Round trips are over ok rows only, so they understate the slow tail.")
     for (harness, kind), (p50, p90, top) in sorted(current.server.items()):
         lines.append(f"Server {harness} {SERVER_KINDS[kind]}: p50/p90/max {p50:.0f}/{p90:.0f}/{top:.0f} ms")
-    for harness, n in sorted(current.over_budget.items()):
-        lines.append(f"Over budget {harness}: {n}")
+    cuts: dict = defaultdict(list)
+    for (harness, kind), n in sorted(current.over_budget.items(), key=lambda kv: (kv[0][0], kv[0][1] is None,
+                                                                                  kv[0][1] or "")):
+        cuts[harness].append(f"{({**KINDS, **SERVER_KINDS}.get(kind, kind) if kind else 'unknown kind')} {n}")
+    for harness, parts in sorted(cuts.items()):
+        lines.append(f"Over budget {harness}: {', '.join(parts)}")
     if current.replies:
         lines.append("Served replies not confirmed by the hook's settle: " + ", ".join(
             f"{h} {u} of {n}" for h, (u, n) in sorted(current.replies.items())))
     for harness, o in sorted(current.observer.items()):
         unit = "completed shell execs" if harness == "codex" else "tool calls"
         lines.append(f"Observer {harness}: judged {o['judged']} {unit}, server cut {o['cut']}, no pre-tool row"
-                     f" {_rate(o['gap'], o['judged'])}; {_previous(['moment/unlogged'], harness, before)}")
+                     f" {_rate(o['gap'], o['judged'])}; {_previous(['moment/unlogged'], harness, before, 'no judged calls in the previous window')}")
     x = current.excluded
     lines.append(f"Not judged: {x['no_moments']} calls in sessions with no moments (coverage unknown),"
                  f" {x['outside']} outside their session's first-to-last moment, {x['not_synced']} in"

@@ -491,5 +491,57 @@ class CueHealthTest(HealthFixture, unittest.TestCase):
         self.assertIn("Observer claude: judged 2 tool calls, server cut 0, no pre-tool row 1 (50.0%)", first)
         self.assertIn("Observer claude: judged 1 tool calls, server cut 0, no pre-tool row 0 (0.0%)", second)
 
+    def test_a_session_bracketing_the_window_still_needs_fresh_sources(self):
+        # Review R1: moments only outside Observer's window, a stale source with an unread tail.
+        self.moment(kind="pre_tool", at=NOW - 27 * H, call="early")
+        self.moment(kind="pre_tool", at=NOW - 1 * H, call="late")
+        self.event("claude", "s1", "mid", NOW - 5 * H)
+        self.source("s1", NOW - 48 * H, read_offset=1, size=10)
+        text = self.day()
+        self.assertNotIn("Observer claude: judged", text)
+        self.assertIn("1 in 1 sessions not synced", text)
+
+    def test_a_session_with_no_observer_source_is_not_judged(self):
+        self.moment(kind="pre_tool", at=NOW - 5 * H, call="a")
+        self.moment(kind="pre_tool", at=NOW - 5 * H + 100, call="b")
+        self.event("claude", "s1", "gap", NOW - 5 * H + 50)
+        text = self.day()
+        self.assertNotIn("Observer claude: judged", text)
+        self.assertIn("1 in 1 sessions not synced, 1 served sessions with no Observer source", text)
+
+    def test_exactly_five_points_up_files_and_just_under_does_not(self):
+        self.lost_rate(NOW - 2 * DAY, 90, 10)
+        self.lost_rate(NOW - DAY, 86, 14)  # four points up
+        self.run_health("--from", iso(NOW - DAY), "--to", iso(NOW))
+        self.assertEqual(self.writes(), [])
+        self.db.execute("DELETE FROM moments WHERE received_at >= ?", (NOW - DAY,))
+        self.db.commit()
+        self.lost_rate(NOW - DAY, 85, 15)  # exactly five points up
+        self.run_health("--from", iso(NOW - DAY), "--to", iso(NOW))
+        [issue] = self.filed("toolboxmd/chromeria")
+        self.assertIn("ContextMD-Class: cue/lost", issue["body"])
+
+    def test_budget_cuts_are_counted_per_kind(self):
+        self.moment(kind="pre_tool", call="c1", status="over_budget")
+        self.moment(kind="tool_result", call="c2", status="over_budget")
+        self.moment(kind=None, session=None, status="over_budget")
+        self.assertIn("Over budget claude: pre-tool 1, tool result 1, unknown kind 1", self.day())
+
+    def test_the_unavailable_rate_has_a_trend(self):
+        self.cue("not_called", 100, at=NOW - 2 * DAY + 12 * H)  # all unavailable before
+        self.cue("not_called", 15, at=NOW - DAY + 12 * H)
+        self.cue("ok", 85, at=NOW - DAY + 12 * H, cue_ms=300)
+        self.assertIn("previous: unavailable 100.0%, timeout -, lost -", self.day(start=NOW - DAY))
+        self.db.execute("DELETE FROM moments")
+        self.db.commit()
+        self.cue("not_called", 1, at=NOW - 2 * DAY + 12 * H)
+        self.cue("ok", 99, at=NOW - 2 * DAY + 12 * H, cue_ms=300)
+        self.cue("not_called", 15, at=NOW - DAY + 12 * H)
+        self.cue("ok", 85, at=NOW - DAY + 12 * H, cue_ms=300)
+        text = self.run_health("--from", iso(NOW - DAY), "--to", iso(NOW))
+        self.assertIn("previous: unavailable 1.0%, timeout 0.0%, lost 0.0%", text)
+        [issue] = self.filed("toolboxmd/contextmd")
+        self.assertIn("ContextMD-Class: cue/unavailable", issue["body"])
+
 if __name__ == "__main__":
     unittest.main()

@@ -218,8 +218,9 @@ repository that owns it. It reads only stored values, read-only:
   (`--observer-db`, default as for `report`), read-only, over the window two
   hours back. It judges tool calls (Codex: completed shell execs) between
   their session's first and last logged moment, in sessions whose every
-  Observer source was imported after that session's last moment with no
-  unread tail. A call whose pre-tool row is `over_budget` is a server cut;
+  Observer source was imported at or after that session's served activity in
+  the window (its last moment, or the window's end while it goes on) with no
+  unread tail. A session with no Observer source is not judged. A call whose pre-tool row is `over_budget` is a server cut;
   a call with no pre-tool row is reported with its cause unknown. Calls it
   cannot judge are counted, never counted as lost. An unreadable ledger
   fails the run and keeps the stored window.
