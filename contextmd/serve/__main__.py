@@ -4,7 +4,7 @@
     contextmd-serve hooks <harness> --base DIR       print the hooks block (or OpenCode plugin) instead
     contextmd-serve off | on | status --base DIR     the one switch for all serving through DIR
     contextmd-serve log --base DIR [--session ID]    the serving log as JSON lines
-    contextmd-serve check                            load the exact-key store and report errors
+    contextmd-serve check                            load the exact-key and Cue stores and report errors
 """
 
 from __future__ import annotations
@@ -34,11 +34,19 @@ def main(argv=None) -> int:
     sub.add_parser("check")
     ns = ap.parse_args(argv)
     if ns.cmd == "check":
-        st = store.load(config.load().exact_keys)
-        print(json.dumps({"entries": [{"id": e.id, "version": e.version, "must_know_before": e.must_know_before,
-                                       "target": e.target, "bytes": len(e.text.encode())} for e in st.entries],
-                          "owners": st.owners, "errors": st.errors}, indent=2))
-        return 1 if st.errors else 0
+        cfg = config.load()
+        st, cue = store.load(cfg.exact_keys), store.load_cue(cfg.cue)
+        print(json.dumps({
+            "exact_keys": {"entries": [{"id": e.id, "version": e.version, "must_know_before": e.must_know_before,
+                                        "target": e.target, "bytes": len(e.text.encode())} for e in st.entries],
+                           "owners": st.owners, "errors": st.errors},
+            "cue": {"url": cfg.cue_url,
+                    "entries": [{"id": e.id, "version": e.version, "name": e.name, "target": e.target,
+                                 "applies_chars": len(e.applies), "bytes": len(e.text.encode())}
+                                for e in cue.entries],
+                    "owners": cue.owners, "errors": cue.errors},
+        }, indent=2))
+        return 1 if st.errors or cue.errors else 0
     base = ns.base.expanduser().resolve()
     p = install.paths(base)
     if ns.cmd == "install":

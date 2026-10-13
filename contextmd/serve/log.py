@@ -18,6 +18,8 @@ def records(db_path: Path, session: str | None = None):
         for m in db.execute(query, (session,) if session else ()).fetchall():
             rec = dict(m)
             rec["owners"] = json.loads(rec.pop("owners_json") or "{}")
+            if "cue_json" in rec:  # Cue's service-side timing and window size, from a server with the Cue lane
+                rec["cue"] = json.loads(rec.pop("cue_json") or "null")
             rec["serves"] = []
             for c in db.execute("SELECT * FROM candidates WHERE moment_id = ? ORDER BY id", (m["id"],)):
                 serve = {k: v for k, v in dict(c).items() if v is not None and k not in ("id", "moment_id")}
