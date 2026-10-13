@@ -153,15 +153,31 @@ class CardTest(unittest.TestCase):
         self.assertEqual(card["events"][0]["role"], "trigger")
         self.assertIsNone(card["no_evidence"])
 
-    def test_a_window_past_the_cap_is_no_evidence(self):
+    def test_a_window_cut_at_the_cap_withholds_only_no_governed_action(self):
+        from contextmd.serve import card
         n, tool = self.served()
         self.event(500, "tool_call", 999.0, native_id=tool, input={"command": "gh issue create"})
         for i in range(70):
             self.event(600 + i, "tool_call", 1001.0 + i, input={"command": f"step {i}"})
-        card = json.loads(self.card(n, "--json").stdout)
-        self.assertEqual(card["window"]["end"], "cap")
-        self.assertEqual(len(card["events"]), 60)
-        self.assertEqual(card["no_evidence"], "window_cap")
+        cut = json.loads(self.card(n, "--json").stdout)
+        self.assertEqual(cut["window"]["end"], "cap")
+        self.assertEqual(len(cut["events"]), 60)
+        self.assertIsNone(cut["no_evidence"])  # the events it shows are evidence
+        self.assertEqual(cut["allowed_labels"], ["irrelevant", "wrong", "followed"])  # unproven: no ignored
+        self.assertIn("ignored", card.allowed_labels({**cut, "shown": "yes"}))
+        verdict = {"candidate": n, "governed_action": None, "events": [600], "reason": "x"}
+        with self.assertRaises(card.LabelError):  # the action may sit past the cut
+            card.check_label(cut, {**verdict, "label": "no_governed_action"})
+        card.check_label(cut, {**verdict, "label": "followed", "governed_action": 600})
+        card.check_label(cut, {**verdict, "label": None})
+        facts = self.card(n).stdout.splitlines()[3]
+        self.assertIn("cut at 60 events", facts)
+        self.assertNotIn("No evidence", facts)
+
+    def test_a_window_ended_by_a_message_keeps_no_governed_action(self):
+        card = json.loads(self.card(self.window_case(), "--json").stdout)
+        self.assertEqual(card["window"]["end"], "next_message")
+        self.assertIn("no_governed_action", card["allowed_labels"])
 
     def test_a_serve_without_its_observer_record_gets_no_events(self):
         n, _ = self.served()
@@ -270,6 +286,7 @@ class CardTest(unittest.TestCase):
         for key in ("candidate", "label", "governed_action", "events", "reason"):
             self.assertIn(f'"{key}"', prompt)
         self.assertIn("`allowed_labels`", prompt)  # the card, not the judge, decides when `ignored` may be used
+        self.assertIn('`window.end` is `"cap"`', prompt)  # and why `no_governed_action` may be missing
 
 
 if __name__ == "__main__":

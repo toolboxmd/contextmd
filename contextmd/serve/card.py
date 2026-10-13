@@ -7,9 +7,10 @@ content comes from Observer's read-only ``event show``. The judge labels it with
 Its first lines read in under 30 seconds: what happened, why it matters, then the facts.
 
 A card the judge must not label carries ``no_evidence``: the report's evidence gap (``not_imported``,
-``no_native_record``, ``observer_failed``), ``window_cap`` when the cap cut the window,
-``window_open`` when the session went on past what Observer has imported, or ``rule_text`` when
-the served text cannot be recovered. Cards print transcript text, so they stay
+``no_native_record``, ``observer_failed``), ``window_open`` when the session went on past what
+Observer has imported, or ``rule_text`` when the served text cannot be recovered. A window cut at
+the cap is still evidence: the judge may give every label its events prove, except
+``no_governed_action``, because the governed action may lie past the cut (#15, planner decision). Cards print transcript text, so they stay
 on the machine (or in the private bench); they are never committed or posted.
 """
 
@@ -42,7 +43,10 @@ def allowed_labels(card: dict) -> list[str]:
     an ignored rule (design v2; the report's ``shown``)."""
     if card.get("no_evidence"):
         return []
-    return [label for label in LABELS if label != "ignored" or card.get("shown") == "yes"]
+    cut = (card.get("window") or {}).get("end") == "cap"
+    return [label for label in LABELS
+            if (label != "ignored" or card.get("shown") == "yes")
+            and (label != "no_governed_action" or not cut)]
 
 
 def check_label(card: dict, verdict: dict) -> None:
@@ -219,9 +223,7 @@ def build(db_path: Path, observer: report.Observer, candidate: int, command: str
         no_evidence = row["evidence"]
     else:
         events, end = window(observer, command, row)
-        if end == "cap":
-            no_evidence = "window_cap"
-        elif end == "end_of_record" and _session_went_on(db_path, row, observer):
+        if end == "end_of_record" and _session_went_on(db_path, row, observer):
             no_evidence = "window_open"  # Observer has not imported the rest of the session yet
     if rule["source"] == "unavailable":
         no_evidence = no_evidence or "rule_text"
