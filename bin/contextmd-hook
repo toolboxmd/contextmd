@@ -13,6 +13,8 @@
 harness=$1 base=$2
 dir=$base/userdata/contextmd
 [ -e "$dir/off" ] && exit 0
+# Grok also runs Claude Code's settings.json hooks; its own hook file serves it (#32).
+[ "$harness" = claude ] && [ -n "${GROK_HOOK_NAME:-}" ] && exit 0
 url=$(sed -n 's/.*"origin" *: *"\([^"]*\)".*/\1/p' "$base/userdata/server-runtime.json" 2>/dev/null)
 token=$(sed -n 's/.*"token" *: *"\([^"]*\)".*/\1/p' "$dir/hook-credential" 2>/dev/null)
 [ -n "$url" ] && [ -n "$token" ] || exit 0
