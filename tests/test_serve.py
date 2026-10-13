@@ -713,6 +713,50 @@ class HookScriptTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_grok_waits_longer_than_other_harnesses(self):
+        # Grok takes served text only at PreToolUse, and its hook timeout is 5 s, so a slow
+        # moment must still arrive there; other harnesses keep the 1 s deadline (chromeria#230).
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("content-length") or 0))
+                if self.path.endswith("/moment"):
+                    time.sleep(1.5)
+                    out = b'{"rule":1}'
+                    self.send_response(200)
+                    self.send_header("content-length", str(len(out)))
+                    self.end_headers()
+                    self.wfile.write(out)
+                else:
+                    self.send_response(204)
+                    self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        hook = BIN.parent / "contextmd-hook"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                base = Path(d)
+                (base / "userdata" / "contextmd").mkdir(parents=True)
+                (base / "userdata" / "server-runtime.json").write_text(
+                    json.dumps({"origin": f"http://127.0.0.1:{server.server_port}"}))
+                (base / "userdata" / "contextmd" / "hook-credential").write_text(json.dumps({"token": "tok"}))
+                env = {k: v for k, v in os.environ.items() if k != "GROK_HOOK_NAME"}
+                run = lambda harness: subprocess.run(["/bin/sh", str(hook), harness, str(base)], input="{}",
+                                                     capture_output=True, text=True, timeout=10, env=env)
+                self.assertEqual(run("grok").stdout, '{"rule":1}')
+                started = time.time()
+                self.assertEqual(run("claude").stdout, "")
+                self.assertLess(time.time() - started, 1.4)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_an_error_status_prints_nothing(self):
         import http.server
         import threading

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.4] - 2026-10-13
+
+### Changed
+
+- The Grok hook waits up to 4 s for serving, inside Grok's 5 s hook timeout, so a slow moment no longer loses a carry (toolboxmd/chromeria#230).
+
 ## [0.5.3] - 2026-10-13
 
 ### Changed
