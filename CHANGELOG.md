@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.7] - 2026-10-13
+
+### Changed
+
+- The serving hook waits up to 2 s (connect 1 s) and the OpenCode plugin 2 s while Cue is new, so slow moments are no longer cut (toolboxmd/chromeria#248).
+
 ## [0.5.6] - 2026-10-13
 
 ### Changed

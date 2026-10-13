@@ -587,6 +587,40 @@ class OpenCodeTruncationTest(unittest.TestCase):
             self.assertEqual(json.loads(done.stdout), [True, True, False])
 
 
+SLOW_REPLY_SCRIPT = r"""
+const [pluginPath] = process.argv.slice(2);
+globalThis.fetch = (url, init) => new Promise((resolve, reject) => {
+  if (!url.endsWith("/moment")) return resolve({ status: 204, json: async () => ({}) });
+  const timer = setTimeout(() => resolve({ status: 200, json: async () => ({ context: "SLOW RULE" }) }), 1500);
+  init.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); });
+});
+const { default: plugin } = await import(pluginPath);
+const hooks = await plugin({ directory: "/tmp" });
+await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s", callID: "c", args: {} }, { output: "", metadata: { exit: 0 } });
+const m = { messages: [{ info: { role: "user", id: "m1", sessionID: "s" }, parts: [] }] };
+await hooks["experimental.chat.messages.transform"]({}, m);
+console.log(JSON.stringify(m.messages[0].parts.map((p) => p.text)));
+"""
+
+
+class OpenCodeCutoffTest(unittest.TestCase):
+    def test_a_reply_within_two_seconds_reaches_opencode(self):
+        # Serving cut-off 2 s while Cue is new (chromeria#248); the plugin aborted at 1 s.
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            (base / "userdata" / "contextmd").mkdir(parents=True)
+            (base / "userdata" / "server-runtime.json").write_text(json.dumps({"origin": "http://127.0.0.1:1"}))
+            (base / "userdata" / "contextmd" / "hook-credential").write_text(json.dumps({"token": "t"}))
+            from contextmd.serve import install
+            plugin = base / "contextmd.mjs"
+            plugin.write_text(install.plugin_source(base))
+            script = base / "run.mjs"
+            script.write_text(SLOW_REPLY_SCRIPT)
+            done = subprocess.run(["node", str(script), str(plugin)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(json.loads(done.stdout), ["SLOW RULE"])
+
+
 class HookScriptTest(unittest.TestCase):
     """The shell hook against a stand-in server: credential, settle and failing open."""
 
@@ -724,17 +758,19 @@ class HookScriptTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def test_grok_waits_longer_than_other_harnesses(self):
-        # Grok takes served text only at PreToolUse, and its hook timeout is 5 s, so a slow
-        # moment must still arrive there; other harnesses keep the 1 s deadline (chromeria#230).
+    def test_hooks_wait_two_seconds_and_grok_four(self):
+        # The serving cut-off is 2 s while Cue is new (user decision 2026-10-13, chromeria#248):
+        # a moment answered in 1.5 s now reaches every harness. Grok, which takes served text only
+        # at PreToolUse and allows hooks 5 s, waits 4 s (chromeria#230).
         import http.server
         import threading
+        delay = {"s": 1.5}
 
         class H(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
                 self.rfile.read(int(self.headers.get("content-length") or 0))
                 if self.path.endswith("/moment"):
-                    time.sleep(1.5)
+                    time.sleep(delay["s"])
                     out = b'{"rule":1}'
                     self.send_response(200)
                     self.send_header("content-length", str(len(out)))
@@ -760,10 +796,12 @@ class HookScriptTest(unittest.TestCase):
                 env = {k: v for k, v in os.environ.items() if k != "GROK_HOOK_NAME"}
                 run = lambda harness: subprocess.run(["/bin/sh", str(hook), harness, str(base)], input="{}",
                                                      capture_output=True, text=True, timeout=10, env=env)
+                self.assertEqual(run("claude").stdout, '{"rule":1}')
+                delay["s"] = 2.5
                 self.assertEqual(run("grok").stdout, '{"rule":1}')
                 started = time.time()
                 self.assertEqual(run("claude").stdout, "")
-                self.assertLess(time.time() - started, 1.4)
+                self.assertLess(time.time() - started, 2.4)
         finally:
             server.shutdown()
             server.server_close()

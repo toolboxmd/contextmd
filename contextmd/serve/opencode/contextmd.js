@@ -51,7 +51,7 @@ async function moment(raw) {
         "x-contextmd-delivery": delivery,
       },
       body: JSON.stringify(raw),
-      signal: AbortSignal.timeout(1000),
+      signal: AbortSignal.timeout(2000), // the serving cut-off while Cue is new (chromeria#248)
     });
     if (res.status !== 200) return null;
     const reply = await res.json();
