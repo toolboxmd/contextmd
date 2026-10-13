@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.6] - 2026-10-13
+
+### Changed
+
+- docs/map.md maps ContextMD's parts to their Issues and PRs for Chromeria's Map tab (toolboxmd/chromeria#235)
+
 ## [0.5.5] - 2026-10-13
 
 ### Changed
