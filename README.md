@@ -153,6 +153,27 @@ moment also records Cue's status (`ok`, `started`, `not_called`, `timeout`,
 candidate records its score and an outcome such as `below_threshold`,
 `holdout` or `injected`.
 
+### Serve evidence report
+
+`bin/contextmd-serve report --base ~/.t3 [--since 2026-10-13] [--json]` shows
+what each served entry did, from the serving log and Agent Observer, with no
+model. Per serve it records:
+
+- `shown`: `yes` when Chromeria saw the deny text in what the model was shown,
+  `no` when another hook's deny hid it, `unproven` otherwise (context serves,
+  and denies on Codex and OpenCode);
+- `lift`: how a deny lifted (`read`, `delivered_inline`, `not_read_capped`),
+  or `open`;
+- `late`: a must-know-before entry served as context after its own command ran;
+- `evidence`: `anchored` to the Observer event of the served call, or
+  `not_imported`, `no_native_record` (Codex keeps no record of a denied call)
+  or `observer_failed`.
+
+Without `--json` it prints one short card per problem it finds: what happened,
+why it matters, then the counts. Canary entries (`live-canary-*`) are left
+out. The report reads Agent Observer with `agent-observer trace` (`--observer`
+names another command) and changes nothing.
+
 Run the tests with `python3 -m unittest discover -s tests -t .`. The contract
 suite in `tests/test_contract.py` runs the real hook against a Chromeria dev
 server when `CONTEXTMD_CHROMERIA` names a Chromeria checkout.
