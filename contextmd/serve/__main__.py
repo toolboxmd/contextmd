@@ -7,6 +7,8 @@
     contextmd-serve check                            load the exact-key and Cue stores and report errors
     contextmd-serve report --base DIR [--since DATE] [--json]
                                                      what each served entry did: shown, read, late, Observer record
+    contextmd-serve health --base DIR [--from DATE --to DATE] [--dry-run]
+                                                     rate the serving log since the last run; file defects at their owners
     contextmd-serve card --base DIR --candidate ID [--json]
                                                      one serve as the outcome judge reads it (prompts/serve/label.md)
 """
@@ -42,6 +44,15 @@ def main(argv=None) -> int:
     rp.add_argument("--observer-db", type=Path, help="Agent Observer's ledger, read-only"
                     " (default: $AGENT_OBSERVER_DB, else Observer's default path)")
     rp.add_argument("--json", action="store_true", help="one JSON row per serve instead of cards")
+    hp = sub.add_parser("health")
+    hp.add_argument("--base", required=True, type=Path)
+    hp.add_argument("--from", dest="start", help="slice start, ISO date or time (UTC unless it names a zone)")
+    hp.add_argument("--to", dest="end", help="slice end; a slice never moves the stored window")
+    hp.add_argument("--dry-run", action="store_true", help="report and say what would be filed; write nothing")
+    hp.add_argument("--config", type=Path, help="health configuration (default ~/.config/contextmd/health.json)")
+    hp.add_argument("--state", type=Path, help="stored window (default ~/.local/state/contextmd/health.json)")
+    hp.add_argument("--gh", default="gh", help="the GitHub CLI")
+    hp.add_argument("--now", help=argparse.SUPPRESS)
     cp = sub.add_parser("card")
     cp.add_argument("--base", required=True, type=Path)
     cp.add_argument("--candidate", required=True, type=int, help="a candidate id from the serving log")
@@ -65,6 +76,8 @@ def main(argv=None) -> int:
         }, indent=2))
         return 1 if st.errors or cue.errors else 0
     base = ns.base.expanduser().resolve()
+    if ns.cmd == "health":
+        return _health(ns, base)
     if ns.cmd == "card":
         from . import card, report
         db = base / "userdata" / "contextmd.sqlite"
@@ -126,6 +139,39 @@ def main(argv=None) -> int:
         expires = None
     print(json.dumps({"serving": "off" if p["off"].exists() else "on", "base": str(base),
                       "credential_expires": expires}))
+    return 0
+
+
+def _health(ns, base: Path) -> int:
+    from datetime import datetime, timezone
+
+    from . import health, report
+    try:
+        now = report.parse_since(ns.now) if ns.now else datetime.now(timezone.utc).timestamp()
+        start, end = report.parse_since(ns.start), report.parse_since(ns.end)
+    except ValueError:
+        print("contextmd-serve health: --from, --to and --now need an ISO date or time")
+        return 2
+    if (start is None) != (end is None):
+        print("contextmd-serve health: --from and --to go together")
+        return 2
+    cfg = health.load_config((ns.config or Path(health.CONFIG)).expanduser())
+    state = (ns.state or Path(health.STATE)).expanduser()
+    db = base / "userdata" / "contextmd.sqlite"
+    sliced = start is not None
+    if not sliced:
+        start, end = health.window(state, db, now), now
+    result = health.measure(db, start, end, cfg["expected_harnesses"], now)
+    print(health.report(result, cfg["expected_harnesses"], cfg["machine"]))
+    try:
+        actions = health.file(result, health.GitHub(ns.gh, ns.dry_run), cfg["machine"], cfg["seed"])
+    except RuntimeError as exc:
+        print(f"contextmd-serve health: {exc}")
+        return 1
+    for action in actions:
+        print(action)
+    if not (sliced or ns.dry_run or result.unreadable):
+        health.save_window(state, db, end)
     return 0
 
 
