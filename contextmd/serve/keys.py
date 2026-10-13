@@ -49,6 +49,23 @@ def words(command: str) -> list[str]:
     return [w for w in WORD_BREAK.split(command) if w]
 
 
+def shell_paths(ws: list[str]) -> list[str]:
+    """Words of a shell command that name a file (as Chromeria's ``Matcher.ts``, #234): a
+    ``/`` or leading ``~``, a ``file:`` URI without its query, ``VAR=path``, or a bare name
+    with an extension. A word is a path by its shape; web URLs are not paths."""
+    out: list[str] = []
+    for word in ws:
+        w = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*=", "", word)
+        if w.startswith("file:"):
+            w = re.sub(r"[?#].*$", "", re.sub(r"^file:(?://)?", "", w))
+        elif "://" in w or w.startswith("-"):
+            continue
+        shaped = "/" in w or w.startswith("~") or re.fullmatch(r"[^/]+\.[A-Za-z0-9]{1,10}", w) is not None
+        if shaped and w and w not in out:
+            out.append(w)
+    return out
+
+
 def repo_relative(path: str, cwd: str | None) -> str:
     """A path relative to the repository holding it, else the absolute path."""
     if cwd and not os.path.isabs(path):
@@ -74,6 +91,7 @@ def extract(tool: str, tool_input, cwd: str | None, error: str | None = None) ->
         if not isinstance(command, str):
             raise Unsupported(f"{tool}: no command")
         keys.words = words(command)
+        keys.paths = [repo_relative(os.path.expanduser(p), cwd) for p in shell_paths(keys.words)]
         return keys
     for name in PATH_FIELDS:
         value = tool_input.get(name)

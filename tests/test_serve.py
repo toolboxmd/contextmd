@@ -39,6 +39,17 @@ class SegmentsTest(unittest.TestCase):
         for command in ["gh pr list", "gh issue create", "ghx pr create", "echo gh pr", "gh pr createx"]:
             self.assertFalse(hit(command), command)
 
+    def test_path_key_matches_files_a_shell_command_names(self):
+        # As Chromeria's Matcher.ts (toolboxmd/chromeria#234).
+        e = store.Entry("e", "v", "t", paths=["**/chromeria-v2.sqlite"])
+        hit = lambda command: e.matches(keys.extract("Bash", {"command": command}, "/tmp")) is not None
+        for command in ["sqlite3 /x/userdata/chromeria-v2.sqlite .tables",
+                        "sqlite3 'file:/x/userdata/chromeria-v2.sqlite?mode=ro' .tables",
+                        'DB=~/.t3/userdata/chromeria-v2.sqlite; sqlite3 "$DB"', "sqlite3 chromeria-v2.sqlite"]:
+            self.assertTrue(hit(command), command)
+        for command in ["echo hello", "curl https://example.com/chromeria-v2.sqlite.gz"]:
+            self.assertFalse(hit(command), command)
+
     def test_glob(self):
         rx = keys.glob_regex("**/SKILL.md")
         self.assertTrue(rx.match("SKILL.md"))

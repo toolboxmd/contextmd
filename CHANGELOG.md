@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.5] - 2026-10-13
+
+### Changed
+
+- Path keys match files a shell command names, in the Python matcher and a contract test (toolboxmd/chromeria#234).
+
 ## [0.5.4] - 2026-10-13
 
 ### Changed
