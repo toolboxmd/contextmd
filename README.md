@@ -179,18 +179,26 @@ model, adapter, quantization, compile and the variant's own threshold. One is
 | `deploy/cue/requirements.txt` | `~/.local/share/contextmd-cue/venv` (Python 3.12) | |
 | `deploy/cue/service.example.json` | `~/.config/contextmd-cue/service.json` | `0600` |
 
-All owned by `luke`. The adapter is copied to
+All owned by `luke:luke`. The adapter is copied to
 `~/.local/share/contextmd-cue/adapters/` and checked by SHA-256.
 
-- **Install or update:** copy the sources at a recorded commit, `systemctl
-  --user daemon-reload`, `systemctl --user restart contextmd-cue`, then wait
-  for `bin/contextmd-cue status ~/.config/contextmd-cue/service.json` to show
-  `"ok": true` (a compiled variant warms up for 1.5 to 4 minutes).
-- **Roll back:** `bin/contextmd-cue rollback ~/.config/contextmd-cue/service.json`
-  swaps `active` and `previous`, appends the switch to
-  `~/.local/state/contextmd-cue/deployments.jsonl` and restarts the unit;
+- **Validate, then install or update:** check out the commit to deploy and run
+  `python3 -m unittest discover -s tests -t .`; install only on a pass. Move
+  the current `app/` to `app.previous/`, copy `bin/contextmd-cue` and
+  `contextmd/` from that commit into a new `app/` (`install -m 0755` for the
+  launcher, `0644` for the rest) and the unit with `install -m 0644`. Then
+  `systemctl --user daemon-reload`, `systemctl --user restart contextmd-cue`,
+  and wait for `curl -s http://100.116.0.2:8710/health` to answer `"ok": true`
+  (a compiled variant warms up for 1.5 to 4 minutes). Record the deployed
+  commit, the app tree hash, the unit and config hashes and the adapter's
+  SHA-256 in the runbook's `bestia/CHANGES.md`.
+- **Roll back the variant:** `bin/contextmd-cue rollback ~/.config/contextmd-cue/service.json`
+  swaps `active` and `previous`, restarts the unit and appends the switch and
+  the restart result to `~/.local/state/contextmd-cue/deployments.jsonl`;
   `deploy <id>` makes another variant active the same way. Every serving-log
   moment records the adapter that scored it.
+- **Roll back the code:** swap `app/` and `app.previous/`, restart the unit,
+  check `/health`, and record the restored commit in `bestia/CHANGES.md`.
 - **Drift check (read-only):** compare `sha256sum` of each deployed file with
   the canonical file at the recorded commit.
 - **Remove:** `systemctl --user disable --now contextmd-cue`, delete the unit

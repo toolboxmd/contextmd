@@ -51,6 +51,11 @@ class WindowTest(unittest.TestCase):
         self.assertTrue(failed.endswith("## TOOL CALL THAT FAILED\n\nBash: pytest\n\nEnd of its output:\n[...]"
                                         + ("x" * 3000 + "1 failed")[-(W.OUTPUT_CHARS - len(W.MARK)):]))
 
+    def test_malformed_citation_markup_stays_text(self):
+        text = 'See <assistant_citations>["x"]</assistant_citations> here'
+        self.assertEqual(W.window([("user", text)]),
+                         f"## AGENT'S PREVIOUS REPLY\n\n(none)\n\n## USER MESSAGE (current turn)\n\n{text}")
+
     def test_no_user_message_is_an_error(self):
         with self.assertRaises(W.NoMessage):
             W.window([("asst", "hello")])
@@ -102,9 +107,25 @@ class ServiceTest(unittest.TestCase):
         with urllib.request.urlopen(f"{self.url}/health", timeout=5) as r:
             self.assertEqual(json.loads(r.read()), {"ok": True, "adapter": "v1", "threshold": 0.5})
 
+    def test_a_scorer_failure_answers_500(self):
+        def boom(text, docs):
+            raise RuntimeError("CUDA out of memory")
+        server = service.make_server("127.0.0.1", 0, service.Variant("v1", {"threshold": 0.5}), boom)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/score",
+                                         data=json.dumps(self.REQ).encode())
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(ctx.exception.code, 500)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_bad_requests_are_refused_without_scoring(self):
         for bad in ({**self.REQ, "items": []}, {**self.REQ, "entries": [{"id": "a"}]},
-                    {**self.REQ, "items": [["system", "x"]]}, {**self.REQ, "items": [["asst", "no user"]]}):
+                    {**self.REQ, "items": [["system", "x"]]}, {**self.REQ, "items": [["asst", "no user"]]},
+                    {**self.REQ, "moment": {"kind": "pre_tool", "call": {"not": "text"}}}, [1, 2]):
             with self.subTest(bad=bad):
                 status, _ = self.post(bad)
                 self.assertEqual(status, 400)
@@ -143,6 +164,7 @@ class SwitchTest(unittest.TestCase):
     def test_rollback_is_one_step_and_logged(self):
         with tempfile.TemporaryDirectory() as d:
             path = self.config(d)
+            path.chmod(0o600)
             out = subprocess.run([sys.executable, str(BIN), "rollback", str(path), "--no-restart"],
                                  capture_output=True, text=True)
             self.assertEqual(out.returncode, 0, out.stderr)
@@ -150,7 +172,9 @@ class SwitchTest(unittest.TestCase):
             self.assertEqual((cfg["active"], cfg["previous"]), ("old", "new"))
             [line] = (Path(d) / "state" / "deployments.jsonl").read_text().splitlines()
             rec = json.loads(line)
-            self.assertEqual((rec["action"], rec["from"], rec["to"]), ("rollback", "new", "old"))
+            self.assertEqual((rec["action"], rec["from"], rec["to"], rec["restart"]),
+                             ("rollback", "new", "old", "skipped"))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_deploy_keeps_the_active_variant_as_previous(self):
         with tempfile.TemporaryDirectory() as d:

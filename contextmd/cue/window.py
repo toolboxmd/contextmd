@@ -5,7 +5,10 @@ The deployed adapter was trained on the ``raw10k`` format: the intent pilot's ``
 message, the agent's previous reply and its plan, oldest trimmed first, the current message cut from its start down
 to its last 2,500 characters), rendered as ``loop/student/winfmt.py render`` (judge ``--windows v3``, ``--context
 none``). ``build`` and ``render`` below are that code, ported unchanged apart from items being ``(kind, text)``
-pairs; ``tests/test_cue_window.py`` pins it with literal windows. The format belongs to the adapter, so it lives
+pairs and malformed citation markup being left as text; ``tests/test_cue.py`` pins it with literal windows, and
+it reproduces all 2,305 training windows byte for byte. One difference stays: training counted the agent's plan
+(its text after the message) against the budget, which serving cannot see yet, so about 15% of live windows are
+trimmed less than their training counterparts. The format belongs to the adapter, so it lives
 with the Cue service and changes only with a retrained adapter (#4).
 
 Items are the thread's messages in time order: ``("user", text)``, ``("asst", text)`` or ``("tool", text)``. A
@@ -50,6 +53,8 @@ def render_citations(t, qcap=None):
             parsed = json.loads(body[body.index("["):body.rindex("]") + 1])
         except ValueError:
             return m.group(0)
+        if not isinstance(parsed, list) or not all(isinstance(c, dict) for c in parsed):
+            return m.group(0)  # markup in a shape the training data never had: keep it as text
         cits.append([(c.get("id"), c.get("citation") or c) for c in parsed])
         return f"\x00{len(cits) - 1}\x00"
 
@@ -57,6 +62,8 @@ def render_citations(t, qcap=None):
     for n, group in enumerate(cits):
         unplaced = []
         for cid, c in group:
+            if not isinstance(c, dict):
+                c = {}
             r = cite(c.get("text"), c.get("comment"), qcap)
             if cid and f"[{cid}]" in out:
                 out = out.replace(f"[{cid}]", "\n" + r + "\n", 1)

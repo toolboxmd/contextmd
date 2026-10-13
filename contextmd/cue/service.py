@@ -85,6 +85,9 @@ def parse_request(raw: bytes) -> dict:
     moment = req.get("moment") or {}
     if not isinstance(moment, dict):
         raise ValueError("moment must be an object")
+    for key in ("kind", "call", "output"):
+        if moment.get(key) is not None and not isinstance(moment[key], str):
+            raise ValueError(f"moment.{key} must be text")
     deadline = req.get("deadline_ms", 1500)
     if not isinstance(deadline, (int, float)) or deadline <= 0:
         raise ValueError("deadline_ms must be a positive number")
@@ -120,8 +123,8 @@ def make_server(host: str, port: int, variant: Variant, score) -> ThreadingHTTPS
                 req = parse_request(self.rfile.read(length))
                 m = req["moment"]
                 text = W.window(req["items"], m.get("kind", "user_message"), m.get("call"), m.get("output"))
-            except (ValueError, TypeError) as exc:
-                return self.reply(400, {"error": str(exc)})
+            except Exception as exc:  # any input the window cannot be built from is the caller's error
+                return self.reply(400, {"error": f"{type(exc).__name__}: {exc}"})
             with gpu:
                 waited = time.monotonic() - arrived
                 if waited * 1000 > req["deadline_ms"]:
@@ -131,6 +134,8 @@ def make_server(host: str, port: int, variant: Variant, score) -> ThreadingHTTPS
                     scores, info = score(text, [e["doc"] for e in req["entries"]])
                 except ValueError as exc:
                     return self.reply(400, {"error": str(exc)})
+                except Exception as exc:  # a scorer failure (CUDA out of memory) answers, never drops the call
+                    return self.reply(500, {"error": type(exc).__name__})
                 ms = (time.monotonic() - t) * 1000
             self.reply(200, {"adapter": variant.id, "threshold": variant.threshold,
                              "scores": {e["id"]: s for e, s in zip(req["entries"], scores)},
@@ -174,14 +179,19 @@ def serve(config_path: Path) -> int:
 
 
 def _write_config(path: Path, cfg: dict) -> None:
+    """Replace the config atomically, keeping its mode (it is 0600 on the host)."""
+    mode = os.stat(path).st_mode & 0o777
     tmp = Path(f"{path}.tmp")
-    tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(cfg, indent=2) + "\n")
+    os.chmod(tmp, mode)
     os.replace(tmp, path)
 
 
-def _record(cfg: dict, action: str, before: str, after: str) -> dict:
-    rec = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "action": action,
-           "from": before, "to": after}
+def record(cfg: dict, rec: dict) -> dict:
+    """Append one deploy or rollback, with its restart result, to the deployments log."""
+    rec = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), **rec}
     log = Path(os.path.expanduser(cfg["deployments"]))
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a") as fh:
@@ -190,7 +200,7 @@ def _record(cfg: dict, action: str, before: str, after: str) -> dict:
 
 
 def switch(config_path: Path, action: str, target: str | None = None) -> dict:
-    """Deploy ``target`` or roll back to the previous variant: rewrite the config and log it."""
+    """Deploy ``target`` or roll back to the previous variant: rewrite the config. The caller logs the result."""
     cfg = load_config(config_path)
     before = cfg["active"]
     if action == "rollback":
@@ -203,11 +213,16 @@ def switch(config_path: Path, action: str, target: str | None = None) -> dict:
         raise ValueError(f"{target} is already active")
     cfg["active"], cfg["previous"] = target, before
     _write_config(config_path, cfg)
-    return _record(cfg, action, before, target)
+    return {"action": action, "from": before, "to": target}
 
 
-def restart() -> None:
-    subprocess.run(["systemctl", "--user", "restart", UNIT], check=True)
+def restart() -> str:
+    """Restart the unit; ``ok`` or why it failed."""
+    try:
+        subprocess.run(["systemctl", "--user", "restart", UNIT], check=True, capture_output=True, text=True)
+        return "ok"
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return f"failed: {getattr(exc, 'stderr', '') or exc}".strip()
 
 
 def status(config_path: Path) -> dict:
@@ -245,7 +260,6 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(f"contextmd-cue {ns.cmd}: {exc}", file=sys.stderr)
         return 1
-    if not ns.no_restart:
-        restart()
-    print(json.dumps(rec))
-    return 0
+    rec["restart"] = "skipped" if ns.no_restart else restart()
+    print(json.dumps(record(load_config(ns.config), rec)))
+    return 0 if rec["restart"] in ("ok", "skipped") else 1
