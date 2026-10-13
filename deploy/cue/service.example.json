@@ -10,7 +10,7 @@
       "adapter": "/home/luke/.local/share/contextmd-cue/adapters/q4b-cloud-step-64",
       "quant": "w8a8",
       "compile": true,
-      "threshold": 0.4375,
+      "threshold": 0.5625,
       "instruction": "<the instruction the adapter was trained with: the training data's \"instruction\">"
     },
     "q4b-cloud-step64-bf16": {
