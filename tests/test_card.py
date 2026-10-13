@@ -246,6 +246,13 @@ class CardTest(unittest.TestCase):
         card.check_label(shown, {"candidate": n, "label": "ignored", "governed_action": 500, "events": [500],
                                  "reason": "x"})
 
+    def test_a_hidden_serve_says_only_what_the_check_recorded(self):
+        n, tool = self.served(seam="deny", kind="pre_tool", outcome="hidden", checked="hidden")
+        self.event(500, "tool_call", 1000.0, native_id=tool, input={"command": "gh issue create"})
+        happened = self.card(n).stdout.splitlines()[1]
+        self.assertNotIn("not shown", happened)
+        self.assertIn("Chromeria's check did not find its text in the call's recorded output", happened)
+
     def test_a_card_with_no_evidence_allows_no_label(self):
         from contextmd.serve import card
         n, _ = self.served()

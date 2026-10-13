@@ -248,7 +248,7 @@ def _session_went_on(db_path: Path, row: dict, observer: report.Observer) -> boo
 
 
 SEAMS = {"deny": "a deny before", "context": "context after", "carry_print": "a carried rule before"}
-SHOWN = {"yes": "the model was shown it", "no": "the model was not shown it",
+SHOWN = {"yes": "the model was shown it", "no": "Chromeria's check did not find its text in the call's recorded output",
          "unproven": "nothing proves the model saw it"}
 ENDS = {"next_message": "ends at the next message", "end_of_record": "ends where the record ends",
         "cap": f"cut at {WINDOW_CAP} events"}
