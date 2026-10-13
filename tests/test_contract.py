@@ -210,6 +210,27 @@ class ContractTest(unittest.TestCase):
         self.server.attempt(self.session, self.run_id + "-other")
         self.assertEqual(self.bash("PreToolUse", "gh pr create")["permissionDecision"], "deny")
 
+    def test_a_path_key_matches_files_a_shell_command_names(self):
+        # toolboxmd/chromeria#234: the forms agents use for one database (rocky Observer).
+        db = self.repo / "userdata" / "chromeria-v2.sqlite"
+        entry(self.keys_dir, "db", "Open the projection database read-only.", path="**/chromeria-v2.sqlite",
+              must_know_before="true")
+        forms = [
+            f"sqlite3 {db} 'select 1'",
+            f"sqlite3 'file:{db}?mode=ro' 'select 1'",
+            f'DB={db}; sqlite3 -readonly "$DB" .tables',
+            "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
+            "cd userdata && sqlite3 ../userdata/chromeria-v2.sqlite .tables",
+        ]
+        for i, command in enumerate(forms):
+            self.session = f"{self._testMethodName}-form{i}"
+            self.server.attempt(self.session, f"{self.run_id}-{i}")
+            out = self.bash("PreToolUse", command)
+            self.assertEqual((out or {}).get("permissionDecision"), "deny", command)
+        self.session = f"{self._testMethodName}-plain"
+        self.server.attempt(self.session, f"{self.run_id}-plain")
+        self.assertIsNone(self.bash("PreToolUse", "curl -s https://example.com/chromeria-v2.sqlite.gz"))
+
     def test_inline_deny_lifts_only_when_the_projection_shows_it(self):
         entry(self.keys_dir, "trailer", "Commits carry Refs: WID-42.", command="git commit", must_know_before="true")
         first = self.bash("PreToolUse", "git commit -m x")
