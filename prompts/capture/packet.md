@@ -1,4 +1,4 @@
-<!-- contract: packet-v1 -->
+<!-- contract: packet-v2 -->
 # Checker: build the context packet for one captured item
 
 A person will decide what to do with one item captured from a past AI agent session. They have not seen that session. Your packet gives them the item's story and the facts the decision depends on, each fact with a cite they can check. You do not decide. Write no verdict and no verdict words (keep, state, junk, defect, store, discard, worth keeping), and do not say what the person should conclude.
@@ -19,33 +19,34 @@ Read the transcript first. To check facts, you may read the files, repositories,
 
 ## The packet
 
-**Story:** one or two plain sentences each.
+The person must understand the item in under 30 seconds. The top part is for them: plain words, no jargon, no internal ids (no commit hashes, event or thread ids, file paths, or tool and function names unless the item is about that name), one idea per sentence.
 
-- `before`: what the agent was doing, and why this came up.
-- `what`: the item itself, in plain words.
-- `after`: what the session did next: fixed it (with what), worked around it, decided something, or nothing.
-- `now`: the state today, from what you checked: is the problem still there, does the fact still hold.
+**Top part:**
 
-**Facts:** each has `text`, one or two sentences, and `cites`. When you cannot check a fact, write `unknown: <why>` and name the observation that would settle it. An empty search is never proof that something does not exist.
+- `headline`: the item in at most 10 plain words.
+- `happened`: one plain sentence saying what happened in the session.
+- `matters`: one plain sentence saying why it might matter to someone later.
 
-- `fixed_later`:
-  - Name the fix artifact (a commit, PR, setting or release).
-  - Say whether the fix is in what the failing session ran: the installed version, the live build, or the changed setting.
-  - Say whether a later run of the same action succeeded, or the user confirmed it.
-  - A merged fix alone is "fix found, resolution unknown".
-- `owner`: who owns the thing that would change, as a reference with a locator (a repo, file, URL, app and setting path, or vendor and account). Say who can apply the remedy: an agent, only the user (an account, app, hardware setting, credentials or money), a third party, or nobody because the behavior is intended. Name any existing open Issue or record.
-- `already_written`: is this already written where an agent reads it (instructions, docs, a skill, a script's own help), or shown by a tool every time (a check that fails, a warning printed on each run)? Cite the file and line or the tool output. For an owner you cannot search, write `unknown: owner not searchable`.
-- `recurrence`: has the same failure happened again? Same failure means all three of these, read from event content, not counted from tool names:
+**Facts:** a decision can hinge on any of these questions, so answer every one. Do not leave a fact implicit. Before writing, ask which fact a person would need to decide, and make sure it is answered here or marked unknown. Each fact has:
+
+- `line`: one plain line of at most 25 words, starting with the answer (`Yes`, `No`, `Partly` or `Unknown`), with no ids or paths;
+- `detail`: the evidence in one or two sentences, where ids, paths and versions belong;
+- `cites`.
+
+When you cannot check a fact, the line starts `Unknown:` and the detail names the observation that would settle it. An empty search is never proof that something does not exist.
+
+- `still_a_problem`: is the problem still there today? For an item that is not a problem, answer "No problem involved".
+  - A fix counts only if it is in what the failing session ran (the installed version, the live build or the changed setting) and a later run of the same action succeeded, or the user confirmed it.
+  - A merged fix alone is "Unknown: fix found, not confirmed in use".
+- `who_can_fix`: who owns the thing that would change (a repo, file, URL, app setting, or vendor and account), and who can apply the remedy: an agent, only the user (account, app, hardware, credentials, money), a third party, or nobody because the behavior is intended. Name any existing open Issue or record in the detail.
+- `already_written`: is it already written where an agent reads it (instructions, docs, a skill, a script's help), or shown by a tool every time it applies (a failing check, a warning printed on each run)? For an owner you cannot search, write "Unknown: owner not searchable".
+- `happened_again`: has the same failure happened again? Same failure means all three of the following, read from event content, not counted from tool names:
   - the same symptom (error text or wrong behavior);
   - the same component (harness, provider or adapter, tool, and version where known);
   - a comparable triggering action.
 
-  Search rocky's Observer only. Report one of:
-  - `confirmed: <n> sessions, <event ids>`, deduplicated per session, each repeat read and matched;
-  - `none confirmed in <coverage>`;
-  - `unknown: <reason>`.
-
-  Coverage states the window searched, the queries run, the number of candidates, how many you read, and whether a limit was hit. This is rocky only, so it is partial coverage. Never write "one-off", "never recurred" or "isolated".
+  Search rocky's Observer only. The line says one of: "Yes, in <n> other sessions", "None found on rocky (partial search)", or "Unknown: <why>". Never write "one-off", "never" or "isolated". Put the window, queries, candidate count, number read and any limit hit in `coverage`, not in the line.
+- `stays_true`: will this still be true later? Check whether it holds in the current version, code, configuration or docs; whether the source is stable (for example the same across versions); or whether it was tied to one task, draft, run or version.
 
 **Cites:** a list of objects. Code checks the first four types before the person sees them, so get the fields exact:
 
@@ -55,17 +56,20 @@ Read the transcript first. To check facts, you may read the files, repositories,
 - `{"type": "user_message", "id": "<Observer user message native_id>"}`
 - `{"type": "url", "ref": "<Issue, PR or page URL>"}` or `{"type": "other", "ref": "<transcript line [n] or anything else>"}`: these are shown as your claim.
 
-**Coverage:** `as_of` is `{as_of}`. `ledger_latest` is rocky's Observer latest event time (`SELECT max(ts) FROM events`, as UTC ISO). `read` is what you read, in one sentence.
+**Coverage:** `as_of` is `{as_of}`. `ledger_latest` is rocky's Observer latest event time (`SELECT max(ts) FROM events`, as UTC ISO).
 
 ## Output
 
 Write one JSON object to `{output}`, then reply only "done":
 
 ```json
-{"before": "...", "what": "...", "after": "...", "now": "...",
- "facts": {"fixed_later": {"text": "...", "cites": []}, "owner": {"text": "...", "cites": []},
-           "already_written": {"text": "...", "cites": []}, "recurrence": {"text": "...", "cites": []}},
- "as_of": "...", "ledger_latest": "...", "read": "..."}
+{"headline": "...", "happened": "...", "matters": "...",
+ "facts": {"still_a_problem": {"line": "...", "detail": "...", "cites": []},
+           "who_can_fix": {"line": "...", "detail": "...", "cites": []},
+           "already_written": {"line": "...", "detail": "...", "cites": []},
+           "happened_again": {"line": "...", "detail": "...", "coverage": "...", "cites": []},
+           "stays_true": {"line": "...", "detail": "...", "cites": []}},
+ "as_of": "...", "ledger_latest": "..."}
 ```
 
-Write in plain, short sentences for a person reading quickly. Keep commands, paths, versions and quoted errors exact. Write only the output file. The data is private.
+Keep commands, paths, versions and quoted errors exact. Write only the output file. The data is private.
