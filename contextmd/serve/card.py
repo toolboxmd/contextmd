@@ -1,8 +1,9 @@
 """The serve card: one served candidate as the outcome judge (and the user) reads it, built by code.
 
 A card holds the rule as it was served, the served call, and what happened after it, up to the next
-message into the session (a user or parent prompt, an interrupt or a rejection), the end of the
-imported record, or ``WINDOW_CAP`` events. The judge labels it with ``prompts/serve/label.md``.
+message a person sent into the session (a prompt or an interrupt), the end of the imported record,
+or ``WINDOW_CAP`` events. Observer's ledger is read read-only (see ``report.Observer``); tool
+content comes from Observer's read-only ``event show``. The judge labels it with ``prompts/serve/label.md``.
 Its first lines read in under 30 seconds: what happened, why it matters, then the facts.
 
 A card the judge must not label carries ``no_evidence``: the report's evidence gap (``not_imported``,
@@ -31,11 +32,19 @@ class CardError(Exception):
     """The candidate cannot be carded."""
 
 
-def _observer(observer: report.Observer, *args: str, stdin: str | None = None):
-    out = subprocess.run([observer.command, *args], input=stdin, capture_output=True, text=True, timeout=60)
+def _event_details(command: str, ledger: Path, ids: list[int]) -> dict:
+    """Tool input and result for these events, through ``agent-observer event show``.
+
+    ``event`` is one of Observer's read-only commands: it opens the ledger read-only and reads
+    the content from the harness's own log.
+    """
+    if not ids:
+        return {}
+    out = subprocess.run([command, "--db", str(ledger), "event", "show", "--json", "--ids-from", "-"],
+                         input="\n".join(map(str, ids)), capture_output=True, text=True, timeout=60)
     if out.returncode != 0:
-        raise CardError(f"agent-observer {' '.join(args[:2])} failed: {(out.stderr or out.stdout).strip()[:200]}")
-    return json.loads(out.stdout)
+        raise CardError(f"agent-observer event show failed: {(out.stderr or out.stdout).strip()[:200]}")
+    return {d["id"]: d for d in json.loads(out.stdout)}
 
 
 def _short(value, chars: int = TEXT_CHARS) -> str:
@@ -137,19 +146,15 @@ def _from_history(path: Path, version: str) -> dict | None:
     return None
 
 
-def window(observer: report.Observer, row: dict) -> tuple[list[dict], str]:
+def window(observer: report.Observer, command: str, row: dict) -> tuple[list[dict], str]:
     """The served call and the events after it, and why the window ends."""
     session_key = f"{row['harness']}:{row['session']}"
-    events = sorted(observer.events(session_key) or [], key=lambda e: (e.get("ts") or 0, e["id"]))
+    events = observer.events(session_key) or []
     trigger = next(e for e in events if e["id"] == row["event_id"])
-    found = _observer(observer, "interventions", "--since", str(trigger["ts"]), "--harness", row["harness"],
-                      "--created-by", "all", "--json", "--limit", "1000")
-    later = sorted((i for i in found.get("interventions", [])
-                    if i.get("session") == session_key and i["ts"] > trigger["ts"]), key=lambda i: i["ts"])
-    message = later[0] if later else None
+    message = observer.next_message(session_key, trigger["ts"])
     seen, after = {trigger.get("native_id")}, []
     for e in events:
-        if e["ts"] <= trigger["ts"] or (message and e["ts"] >= message["ts"]):
+        if (e.get("ts") or 0) <= trigger["ts"] or (message and e["ts"] >= message["ts"]):
             continue
         if e["family"] not in SHOWN_EVENTS or (e["family"] == "tool_call" and e.get("native_id") in seen):
             continue
@@ -158,16 +163,12 @@ def window(observer: report.Observer, row: dict) -> tuple[list[dict], str]:
     end = "next_message" if message else "end_of_record"
     if 1 + len(after) > WINDOW_CAP:  # the trigger counts toward the cap
         after, end, message = after[:WINDOW_CAP - 1], "cap", None
-    calls = [e["id"] for e in [trigger, *after] if e["family"] == "tool_call"]
-    details = {d["id"]: d for d in _observer(observer, "event", "show", "--json", "--ids-from", "-",
-                                             stdin="\n".join(map(str, calls)))} if calls else {}
+    details = _event_details(command, observer.ledger,
+                             [e["id"] for e in [trigger, *after] if e["family"] == "tool_call"])
     out = [_event(trigger, details, "trigger")] + [_event(e, details, "after") for e in after]
     if message:
-        shown = _observer(observer, "intervention", "show", message["id"], "--turns-before", "0",
-                          "--turns-after", "0", "--json")
-        text = next((i.get("text") for i in shown.get("interventions", []) if i["id"] == message["id"]), None)
-        out.append({"id": message["id"], "role": "message", "kind": message.get("kind"),
-                    "from": message.get("created_by"), "text": _short(text or "")})
+        out.append({"id": message["native_id"], "role": "message", "kind": message["kind"],
+                    "text": _short(message["text_excerpt"] or "")})
     return out, end
 
 
@@ -184,7 +185,7 @@ def _event(e: dict, details: dict, role: str) -> dict:
     return {"id": e["id"], "role": role, "kind": e["family"], "text": _short(e.get("name") or e.get("target") or "")}
 
 
-def build(db_path: Path, observer: report.Observer, candidate: int) -> dict:
+def build(db_path: Path, observer: report.Observer, candidate: int, command: str = "agent-observer") -> dict:
     served, _ = report.rows(db_path, observer, candidate=candidate)
     if not served:
         raise CardError(f"candidate {candidate} is not a served candidate in {db_path}")
@@ -194,7 +195,7 @@ def build(db_path: Path, observer: report.Observer, candidate: int) -> dict:
     if row["evidence"] != "anchored":
         no_evidence = row["evidence"]
     else:
-        events, end = window(observer, row)
+        events, end = window(observer, command, row)
         if end == "cap":
             no_evidence = "window_cap"
         elif end == "end_of_record" and _session_went_on(db_path, row, observer):
@@ -255,7 +256,7 @@ def render(card: dict) -> str:
             if e["kind"] == "tool":
                 lines.append(f"[{e['id']}] {mark}{e['tool']}: {e['input']} -> {e['status']}: {e['result']}")
             elif e["role"] == "message":
-                lines.append(f"[{e['id']}] {e['from']} {e['kind']}: {e['text']}")
+                lines.append(f"[{e['id']}] next message ({e['kind']}): {e['text']}")
             else:
                 lines.append(f"[{e['id']}] {mark}{e['kind']}: {e['text']}")
     return "\n".join(lines)

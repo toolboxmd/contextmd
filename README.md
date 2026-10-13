@@ -194,8 +194,10 @@ served entry the way the outcome judge reads it:
   served version from its store's Git history, the deny text, or the reply
   that carried it;
 - how it was delivered;
-- the events from the served call up to the next message into the session,
-  or at most 60 events.
+- the events from the served call up to the next prompt or interrupt a
+  person sent into the session, or at most 60 events. A parent agent's
+  message into a child session does not end the window yet
+  (toolboxmd/agent-observer#73).
 
 The first lines say what happened and why it matters, then give the facts.
 The judge labels the card with
@@ -207,7 +209,9 @@ label names its gap under `no_evidence`:
 - `window_open`, when the session went on past what Observer has imported;
 - `rule_text`, when the served text cannot be recovered.
 
-Cards hold transcript text, so keep them on the machine.
+The card reads Observer's ledger read-only, like the report, and gets tool
+input and results from `agent-observer event show`, which is a read-only
+command. Cards hold transcript text, so keep them on the machine.
 
 Run the tests with `python3 -m unittest discover -s tests -t .`. The contract
 suite in `tests/test_contract.py` runs the real hook against a Chromeria dev

@@ -71,12 +71,25 @@ class Observer:
         if session_key not in self.cache:
             db = self.connect()
             try:
-                self.cache[session_key] = None if db is None else [dict(r) for r in db.execute(
-                    """SELECT id, family, native_id, ts, ordinal_num, name, target FROM events
-                       WHERE session_key = ? ORDER BY COALESCE(ts, 0), ordinal_num""", (session_key,))]
-            except sqlite3.Error:
+                self.cache[session_key] = None if db is None else [
+                    {**dict(r), "detail": json.loads(r["detail_json"]) if r["detail_json"] else None}
+                    for r in db.execute(
+                        """SELECT id, family, native_id, ts, ordinal_num, name, target, detail_json FROM events
+                           WHERE session_key = ? ORDER BY COALESCE(ts, 0), ordinal_num""", (session_key,))]
+            except (sqlite3.Error, ValueError):
                 self.cache[session_key] = None
         return self.cache[session_key]
+
+    def next_message(self, session_key: str, after: float) -> dict | None:
+        """The first message a person sent into the session after ``after``: a prompt or an interrupt."""
+        db = self.connect()
+        if db is None:
+            return None
+        row = db.execute(
+            """SELECT native_id, ts, kind, text_excerpt FROM user_messages
+               WHERE session_key = ? AND ts > ? AND kind IN ('genuine', 'interrupt')
+               ORDER BY ts LIMIT 1""", (session_key, after)).fetchone()
+        return dict(row) if row else None
 
 
 def evidence(observer: Observer, harness: str, session: str, tool_use_id: str | None, at: float):

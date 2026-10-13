@@ -45,7 +45,9 @@ def main(argv=None) -> int:
     cp = sub.add_parser("card")
     cp.add_argument("--base", required=True, type=Path)
     cp.add_argument("--candidate", required=True, type=int, help="a candidate id from the serving log")
-    cp.add_argument("--observer", default="agent-observer", help="Agent Observer's command")
+    cp.add_argument("--observer-db", type=Path, help="Agent Observer's ledger, read-only"
+                    " (default: $AGENT_OBSERVER_DB, else Observer's default path)")
+    cp.add_argument("--observer", default="agent-observer", help="Agent Observer's command, for `event show`")
     cp.add_argument("--json", action="store_true", help="the card as JSON, for the outcome judge")
     ns = ap.parse_args(argv)
     if ns.cmd == "check":
@@ -69,7 +71,7 @@ def main(argv=None) -> int:
         try:
             if not db.exists():
                 raise card.CardError(f"no serving log at {db}")
-            built = card.build(db, report.Observer(ns.observer), ns.candidate)
+            built = card.build(db, report.Observer(ns.observer_db), ns.candidate, ns.observer)
         except (card.CardError, report.LogError) as exc:
             print(f"contextmd-serve card: {exc}")
             return 1

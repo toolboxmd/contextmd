@@ -12,28 +12,20 @@ ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / "bin" / "contextmd-serve"
 PROMPT = ROOT / "prompts" / "serve" / "label.md"
 
-# A fake Agent Observer for the commands the card reads: trace, event show, interventions, intervention show.
+# A fake Agent Observer that only answers `--db LEDGER event show`, Observer's read-only lookup.
+# Any other command fails, and every call is recorded, so a test can see what the card ran.
 FAKE_OBSERVER = """#!/usr/bin/env python3
 import json, sys
 from pathlib import Path
-data = json.loads((Path(__file__).parent / "observer.json").read_text())
+here = Path(__file__).parent
+with open(here / "calls.jsonl", "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\\n")
 args = sys.argv[1:]
-def arg(name):
-    return args[args.index(name) + 1]
-if args[0] == "trace":
-    print(json.dumps({"events": data["events"].get(arg("--session"), [])[:int(arg("--limit"))]}))
-elif args[:2] == ["event", "show"]:
-    ids = [int(line) for line in sys.stdin.read().split()]
-    print(json.dumps([data["details"][str(i)] for i in ids if str(i) in data["details"]]))
-elif args[0] == "interventions":
-    since = float(arg("--since"))
-    print(json.dumps({"interventions": [i for i in data["interventions"]
-                                         if i["ts"] >= since and i["harness"] == arg("--harness")]}))
-elif args[:2] == ["intervention", "show"]:
-    ids = [a for a in args[2:] if not a.startswith("-") and not a.isdigit()]
-    print(json.dumps({"interventions": [i for i in data["interventions"] if i["id"] in ids]}))
-else:
+if args[:1] != ["--db"] or args[2:4] != ["event", "show"]:
     sys.exit(2)
+data = json.loads((here / "observer.json").read_text())
+ids = [int(line) for line in sys.stdin.read().split()]
+print(json.dumps([data["details"][str(i)] for i in ids if str(i) in data["details"]]))
 """
 
 # The real AgentsMD entry, as it was served (it is public). The version the log holds is the hash of these bytes.
@@ -65,7 +57,9 @@ class CardTest(unittest.TestCase):
         self.observer = self.tmp / "agent-observer"
         self.observer.write_text(FAKE_OBSERVER)
         self.observer.chmod(0o755)
-        self.data = {"events": {}, "details": {}, "interventions": []}
+        self.ledger_path = self.tmp / "observer.db"
+        self.ledger = fixture.ledger(self.ledger_path)
+        self.data = {"details": {}}
         # An owner repository: the entry was served at v1, then edited to v2 and committed.
         self.store = self.tmp / "agentsmd" / "contextmd"
         self.store.mkdir(parents=True)
@@ -93,18 +87,27 @@ class CardTest(unittest.TestCase):
         return n, tool
 
     def event(self, eid, family, ts, native_id=None, **detail):
-        self.data["events"].setdefault("claude:s1", []).append(
-            {"id": eid, "family": family, "ts": ts, "native_id": native_id or f"n{eid}",
-             "name": detail.get("tool"), "detail": detail.get("trace_detail")})
+        self.ledger.execute("INSERT INTO events (id, session_key, ts, family, native_id, name, detail_json)"
+                            " VALUES (?, 'claude:s1', ?, ?, ?, ?, ?)",
+                            (eid, ts, family, native_id or f"n{eid}", detail.get("tool"),
+                             json.dumps(detail["trace_detail"]) if "trace_detail" in detail else None))
+        self.ledger.commit()
         if family == "tool_call":
             self.data["details"][str(eid)] = {"id": eid, "family": family, "tool": detail.get("tool", "Bash"),
                                               "input": detail.get("input", {}), "status": detail.get("status", "ok"),
                                               "result": detail.get("result", "")}
 
+    def message(self, native_id, ts, text, kind="genuine"):
+        self.ledger.execute("INSERT INTO user_messages (native_id, session_key, ts, kind, text_hash, text_excerpt,"
+                            " is_genuine) VALUES (?, 'claude:s1', ?, ?, 'h', ?, ?)",
+                            (native_id, ts, kind, text, 1 if kind == "genuine" else 0))
+        self.ledger.commit()
+
     def card(self, candidate, *extra, ok=True):
         (self.tmp / "observer.json").write_text(json.dumps(self.data))
         out = subprocess.run([sys.executable, str(BIN), "card", "--base", str(self.tmp), "--candidate", str(candidate),
-                              "--observer", str(self.observer), *extra], capture_output=True, text=True)
+                              "--observer-db", str(self.ledger_path), "--observer", str(self.observer), *extra],
+                             capture_output=True, text=True)
         if ok:
             self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         return out
@@ -116,9 +119,8 @@ class CardTest(unittest.TestCase):
         self.event(501, "tool_result", 999.1, native_id=tool)  # the same call again: shown once
         self.event(502, "assistant_message", 1001.0, trace_detail={"excerpt": "Filed it; now the PR."})
         self.event(503, "tool_call", 1002.0, tool="Bash", input={"command": "gh pr create --fill"}, result="pr 8")
-        self.data["interventions"].append({"id": "sub:claude:u1", "harness": "claude", "session": "claude:s1",
-                                           "ts": 1003.0, "kind": "prompt", "created_by": "user",
-                                           "text": "You skipped the Elon record."})
+        self.message("u1", 1002.5, "Tool output fed back to the model.", kind="synthetic")  # not a boundary
+        self.message("u2", 1003.0, "You skipped the Elon record.")
         self.event(504, "tool_call", 1004.0, tool="Bash", input={"command": "echo after"}, result="after")
         return n
 
@@ -135,7 +137,7 @@ class CardTest(unittest.TestCase):
         self.assertIn("before creating an Issue or PR", rest)
         self.assertNotIn("any Issue", rest)
         events = re.findall(r"^\[(\S+)\]", rest, re.M)
-        self.assertEqual(events, ["500", "502", "503", "sub:claude:u1"])
+        self.assertEqual(events, ["500", "502", "503", "u2"])
         self.assertIn("gh pr create --fill", rest)
         self.assertIn("You skipped the Elon record.", rest)
         self.assertNotIn("echo after", rest)  # after the next message: outside the window
@@ -147,7 +149,7 @@ class CardTest(unittest.TestCase):
         self.assertEqual(card["candidate"], n)
         self.assertEqual(card["rule"]["source"], "store_history")
         self.assertEqual(card["window"]["end"], "next_message")
-        self.assertEqual([e["id"] for e in card["events"]], [500, 502, 503, "sub:claude:u1"])
+        self.assertEqual([e["id"] for e in card["events"]], [500, 502, 503, "u2"])
         self.assertEqual(card["events"][0]["role"], "trigger")
         self.assertIsNone(card["no_evidence"])
 
@@ -204,6 +206,15 @@ class CardTest(unittest.TestCase):
         self.log.moment(session="s1", at=1500.0)  # the session went on past Observer's last event
         card = json.loads(self.card(n, "--json").stdout)
         self.assertEqual((card["window"]["end"], card["no_evidence"]), ("end_of_record", "window_open"))
+
+    def test_the_card_only_reads_observer(self):
+        n = self.window_case()
+        self.ledger.close()
+        before = (self.ledger_path.read_bytes(), self.ledger_path.stat().st_mtime_ns)
+        self.card(n)
+        self.assertEqual((self.ledger_path.read_bytes(), self.ledger_path.stat().st_mtime_ns), before)
+        calls = [json.loads(line) for line in (self.tmp / "calls.jsonl").read_text().splitlines()]
+        self.assertEqual({tuple(c[:4]) for c in calls}, {("--db", str(self.ledger_path), "event", "show")})
 
     def test_an_unknown_candidate_fails_with_a_message(self):
         out = self.card(9999, ok=False)

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.0] - 2026-10-13
+
+### Added
+
+- Serve card and outcome-label prompt: one served entry as the outcome judge reads it (#15)
+
 ## [0.3.0] - 2026-10-13
 
 ### Added
