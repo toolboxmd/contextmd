@@ -1,4 +1,4 @@
-"""contextmd capture: prepare, next, record, commit, abandon, report and the experiment commands. Stdlib only; prints JSON."""
+"""contextmd capture: prepare, next, record, commit, abandon, report, cites and the experiment commands. Stdlib only; prints JSON."""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ import argparse
 import hashlib
 import json
 import sys
+from pathlib import Path
 
-from .capture import compare, config, dedupe, observer, report
+from .capture import cites, compare, config, dedupe, observer, report
 from .capture.passes import Capture, CaptureError
 from .capture.store import Busy, write_json
 
@@ -58,8 +59,20 @@ def main(argv=None) -> int:
     rp2.add_argument("--extract-prompt", default="extract.md", help="prompt file under prompts/capture/")
     rp2.add_argument("--reuse-extracts", action="store_true",
                      help="copy the source pass's extractor outputs; only the judge runs again")
+    ct = cs.add_parser("cites", help="check the cites in a context packets file in place")
+    ct.add_argument("packets", help="JSON object of packets keyed by item number")
     ns = ap.parse_args(argv)
     cfg = config.load(ns.config)
+    if ns.cmd == "cites":
+        packets = json.loads(Path(ns.packets).read_text())
+        con = observer.connect(cfg["observer_db"])
+        try:
+            out = cites.check_packets(packets, con)
+        finally:
+            con.close()
+        write_json(Path(ns.packets), packets)
+        print(json.dumps(out, indent=1))
+        return 0
     cap_ = Capture(cfg)
     try:
         if ns.cmd in ("report", "compare", "dedupe"):
