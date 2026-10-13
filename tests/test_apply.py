@@ -50,9 +50,9 @@ class ApplyTest(unittest.TestCase):
         git(self.tmp, "clone", "-q", str(self.remote), str(self.repo))
         git(self.repo, "config", "user.email", "t@example.com")
         git(self.repo, "config", "user.name", "t")
-        self.store_dir = self.repo / "library" / "keys"
+        self.store_dir = self.repo / "library"
         self.store_dir.mkdir(parents=True)
-        (self.store_dir / "README.md").write_text("# Exact-key entries\n")
+        (self.store_dir / "README.md").write_text("# Great Library\n")
         git(self.repo, "add", ".")
         git(self.repo, "commit", "-q", "-m", "init")
         git(self.repo, "push", "-q", "-u", "origin", "main")
@@ -102,7 +102,7 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(after[1:], before)
         sha = after[0]
         self.assertEqual(out["sha"], sha)
-        self.assertEqual(git(self.repo, "show", "--name-only", "--format=", sha), "library/keys/chromeria-db-read-only.md")
+        self.assertEqual(git(self.repo, "show", "--name-only", "--format=", sha), "library/chromeria-db-read-only.md")
         self.assertEqual((self.store_dir / "chromeria-db-read-only.md").read_text(), ENTRY)
         trailers = git(self.repo, "log", "-1", "--format=%(trailers:only,unfold)", sha).splitlines()
         self.assertIn(f"Capture-Key: {self.name}", trailers)
