@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.0] - 2026-10-13
+
+### Added
+
+- The daily health check reports Cue speed, timeouts, lost and unavailable Cue moments per harness and kind, server time, budget cuts, unsettled replies and tool calls with no pre-tool row from Agent Observer, and files a rate only when it got worse (#57).
+
 ## [0.5.7] - 2026-10-13
 
 ### Changed

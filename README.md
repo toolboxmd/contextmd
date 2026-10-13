@@ -205,6 +205,31 @@ repository that owns it. It reads only stored values, read-only:
 - **Heartbeats.** An expected harness with no moments reads
   `no calls, coverage unknown` while the heartbeat is fresh, and
   `server stale` when it is not.
+- **Cue, per harness and moment kind (#57).** For user messages, tool
+  results and tool failures with a Cue status: *unavailable*
+  (`not_called` or `connect_failed`) over all scored moments, then
+  *timeout* and *lost* over the available ones, and the p50/p90 round trip
+  of `ok` rows. Round trips leave out timeouts, so they understate the slow
+  tail.
+- **Server time and budget cuts.** p50/p90/max of the server's own time per
+  kind, `over_budget` moments per harness, and served (200) replies the hook
+  never settled.
+- **Tool calls with no pre-tool row.** Agent Observer's ledger
+  (`--observer-db`, default as for `report`), read-only, over the window two
+  hours back. It judges tool calls (Codex: completed shell execs) between
+  their session's first and last logged moment, in sessions whose every
+  Observer source was imported at or after that session's served activity in
+  the window (its last moment, or the window's end while it goes on) with no
+  unread tail. A session with no Observer source is not judged. A call whose pre-tool row is `over_budget` is a server cut;
+  a call with no pre-tool row is reported with its cause unknown. Calls it
+  cannot judge are counted, never counted as lost. An unreadable ledger
+  fails the run and keeps the stored window.
+
+A Cue or tool-call rate is marked `*` at 10 or more events over 2%. It files
+only when it got worse than the window of equal length just before: it
+crossed 2%, or rose 5 points. Each harness and kind is judged on its own.
+`cue/timeout` and `cue/lost` file in toolboxmd/chromeria, `cue/unavailable`
+and `moment/unlogged` here.
 
 Each Issue carries a `ContextMD-Class:` line. A later window adds a comment.
 Each post is identified by machine, class and window, so the same

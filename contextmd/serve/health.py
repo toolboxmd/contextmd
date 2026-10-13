@@ -1,7 +1,8 @@
 """The daily serving health check (#40): rate one machine's serving log and file defects at their owners.
 
 It reads only stored values, read-only: ``moments.status`` per harness, ``candidates.outcome`` per
-harness, and ``heartbeats.at``. No model, no transcript text.
+harness, and ``heartbeats.at``. No model, no transcript text. Cue speed, server time and tool calls
+with no pre-tool row (#57) are ``measures``; their rows file through the same Issues.
 
 - **Window:** from the end of the last successful run to now (first run: the last 24 hours). The end
   is stored only after a successful run, so a spike repaired between runs is still seen. An
@@ -47,6 +48,7 @@ OWNERS = {
     **{f"moment/{s}": CONTEXTMD for s in ("bad_event", "bad_request", "oversize", "unauthorized", "bad_config")},
     **{f"moment/{s}": CHROMERIA for s in ("unjoined", "ambiguous", "unmapped")},
     **{f"candidate/{o}": CHROMERIA for o in FILED_OUTCOMES},
+    "cue/timeout": CHROMERIA, "cue/lost": CHROMERIA, "cue/unavailable": CONTEXTMD, "moment/unlogged": CONTEXTMD,
 }
 CONFIG = "~/.config/contextmd/health.json"
 STATE = "~/.local/state/contextmd/health.json"
@@ -71,6 +73,7 @@ class Result:
     harnesses: dict = field(default_factory=dict)
     findings: list[Finding] = field(default_factory=list)
     unreadable: str | None = None
+    measures: list[str] = field(default_factory=list)  # the Cue and lost-call lines (#57)
 
 
 def utc(ts: float) -> str:
@@ -143,6 +146,7 @@ def report(result: Result, expected: list[str], machine: str) -> str:
         if h["outcomes"]:
             parts.append("outcomes " + ", ".join(f"{o} {n}" for o, n in sorted(h["outcomes"].items())))
         lines.append(". ".join(parts))
+    lines += result.measures
     if not result.findings:
         lines.append("Nothing to file.")
     return "\n".join(lines)
@@ -158,7 +162,10 @@ def section(finding: Finding, result: Result, machine: str) -> str:
         for r in finding.rows:
             rate = f"{r['rate']:.1%}" if "rate" in r else "n/a"
             kinds = ", ".join(f"{k} {n}" for k, n in sorted((r.get("kinds") or {}).items())) or "n/a"
-            count = (f"{r['count']} of {r['total']} moments" if finding.cls.startswith("moment/")
+            if "previous" in r:
+                kinds = f"previous window {r['previous']:.1%}"
+            count = (f"{r['count']} of {r['total']} {r['unit']}" if "unit" in r
+                     else f"{r['count']} of {r['total']} moments" if finding.cls.startswith("moment/")
                      else f"{r['count']} candidate rows, of {r['total']} moments")
             lines.append(f"| {r['harness']} | {count} | {rate} | {kinds} |")
         ids = [i for r in finding.rows for i in r["ids"]][:MAX_IDS]
@@ -178,8 +185,8 @@ def window_mark(finding: Finding, result: Result, machine: str) -> str:
 def body(finding: Finding, result: Result, machine: str) -> str:
     return "\n".join([
         f"**What:** The serving health check found `{finding.cls}` on {machine} over its threshold.",
-        "**Why:** The daily check (toolboxmd/contextmd#40) rates the serving log's stored statuses and outcomes;"
-        " this class is a defect this repository owns.",
+        "**Why:** The daily check (toolboxmd/contextmd#40, #57) rates the serving log's stored statuses, outcomes"
+        " and Cue results, and tool calls Agent Observer saw; this class is a defect this repository owns.",
         "**So what:** An agent finds the cause and fixes it here; the check comments with each later window"
         " over the threshold.",
         "",
