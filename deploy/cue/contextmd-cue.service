@@ -1,0 +1,17 @@
+# ContextMD Cue service, a user unit on the GPU serving host. Deployed copy:
+# ~/.config/systemd/user/contextmd-cue.service (0644). See README "Cue service".
+[Unit]
+Description=ContextMD Cue service (scores moments against Cue entries)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HF_HUB_OFFLINE=1
+Environment=TORCHINDUCTOR_CACHE_DIR=%h/.cache/contextmd-cue/inductor
+ExecStart=%h/.local/share/contextmd-cue/venv/bin/python -I %h/.local/share/contextmd-cue/app/bin/contextmd-cue serve %h/.config/contextmd-cue/service.json
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

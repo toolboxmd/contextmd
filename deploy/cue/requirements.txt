@@ -1,0 +1,6 @@
+# The versions INT8-REPORT.md measured (bestia, 2026-10-12). torch comes from the CUDA 13.0 index:
+#   uv pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu130
+transformers==5.19.0
+peft==0.21.2
+torchao==0.18.0
+accelerate==1.15.0

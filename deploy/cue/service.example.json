@@ -1,0 +1,25 @@
+{
+  "host": "100.116.0.2",
+  "port": 8710,
+  "active": "q4b-cloud-step64-w8a8c",
+  "previous": "q4b-cloud-step64-bf16",
+  "deployments": "~/.local/state/contextmd-cue/deployments.jsonl",
+  "variants": {
+    "q4b-cloud-step64-w8a8c": {
+      "model": "qwen3-4b",
+      "adapter": "/home/luke/.local/share/contextmd-cue/adapters/q4b-cloud-step-64",
+      "quant": "w8a8",
+      "compile": true,
+      "threshold": 0.4375,
+      "instruction": "<the instruction the adapter was trained with: the training data's \"instruction\">"
+    },
+    "q4b-cloud-step64-bf16": {
+      "model": "qwen3-4b",
+      "adapter": "/home/luke/.local/share/contextmd-cue/adapters/q4b-cloud-step-64",
+      "quant": "none",
+      "compile": false,
+      "threshold": 0.6875,
+      "instruction": "<same instruction>"
+    }
+  }
+}

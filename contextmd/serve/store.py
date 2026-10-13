@@ -20,6 +20,22 @@ directory. The version is derived from the file
 bytes, so editing an entry makes it new for deny-once. Store directories are
 usually owner repositories (a Library, the Great Library); the commit each
 was loaded at goes into the serving log.
+
+Cue entries live in their own directories (the ``cue`` list of the serving
+config), never inside an exact-key directory, because each loader rejects the
+other's fields::
+
+    ---
+    id: agentsmd-research
+    name: Research
+    applies: The request asks a question whose answer is facts beyond what is at hand. Not: ...
+    target: ../skills/operations/workflows/research/index.md
+    ---
+    AgentsMD: follow the research procedure.
+
+Cue scores ``"<name>: <applies>"`` (the text it was trained on, so it is never
+rewritten for display). ``target`` is optional; the served text ends with
+"Read <target> in full."
 """
 
 from __future__ import annotations
@@ -38,6 +54,7 @@ MAX_ENTRY_BYTES = 1800
 MAX_ID_CHARS = 120
 KEY_FIELDS = ("command", "path", "error")
 OTHER_FIELDS = ("id", "must-know-before", "target")
+CUE_FIELDS = ("id", "name", "applies", "target")
 
 
 @dataclass
@@ -75,7 +92,31 @@ class Store:
     errors: list[str]
 
 
-def parse(path: Path) -> Entry:
+@dataclass
+class CueEntry:
+    id: str
+    version: str
+    name: str
+    applies: str
+    text: str
+    path: str = ""
+    target: str | None = None
+
+    @property
+    def doc(self) -> str:
+        """What Cue scores: the entry as it was trained on."""
+        return f"{self.name}: {self.applies}"
+
+
+@dataclass
+class CueStore:
+    entries: list[CueEntry]
+    owners: dict[str, str | None]
+    errors: list[str]
+
+
+def _front_matter(path: Path, allowed) -> tuple[bytes, dict[str, list[str]], str]:
+    """The file bytes, its front-matter fields and its body; raises on a malformed entry."""
     raw = path.read_bytes()
     text = raw.decode("utf-8")
     lines = text.split("\n")
@@ -93,7 +134,7 @@ def parse(path: Path) -> Entry:
         if not sep:
             raise ValueError(f"not a 'name: value' line: {line!r}")
         fields.setdefault(name.strip(), []).append(value.strip())
-    unknown = set(fields) - {*OTHER_FIELDS, *KEY_FIELDS}
+    unknown = set(fields) - set(allowed)
     if unknown:
         raise ValueError(f"unknown fields: {sorted(unknown)}")
     body = "\n".join(lines[end + 1:]).strip()
@@ -101,6 +142,22 @@ def parse(path: Path) -> Entry:
         raise ValueError("empty body")
     if len(body.encode()) > MAX_ENTRY_BYTES:
         raise ValueError(f"body is {len(body.encode())} UTF-8 bytes, over {MAX_ENTRY_BYTES}")
+    return raw, fields, body
+
+
+def _entry_id(fields: dict[str, list[str]], path: Path) -> str:
+    entry_id = (fields.get("id") or [path.stem])[-1]
+    if len(entry_id) > MAX_ID_CHARS:
+        raise ValueError(f"id is {len(entry_id)} characters, over {MAX_ID_CHARS}")
+    return entry_id
+
+
+def _target(value: str, path: Path) -> str:
+    return os.path.realpath(os.path.join(path.parent, os.path.expanduser(value)))
+
+
+def parse(path: Path) -> Entry:
+    raw, fields, body = _front_matter(path, {*OTHER_FIELDS, *KEY_FIELDS})
     flag = (fields.get("must-know-before") or ["false"])[-1].lower()
     if flag not in ("true", "false"):
         raise ValueError("must-know-before is not true or false")
@@ -108,9 +165,9 @@ def parse(path: Path) -> Entry:
     if target is not None:
         if flag != "true":
             raise ValueError("target is only for must-know-before entries")
-        target = os.path.realpath(os.path.join(path.parent, os.path.expanduser(target)))
+        target = _target(target, path)
     entry = Entry(
-        id=(fields.get("id") or [path.stem])[-1],
+        id=_entry_id(fields, path),
         version=hashlib.sha256(raw).hexdigest()[:12],
         text=body,
         must_know_before=flag == "true",
@@ -120,11 +177,29 @@ def parse(path: Path) -> Entry:
         paths=[p for p in fields.get("path", []) if p],
         errors=[normalize_error(e) for e in fields.get("error", []) if e],
     )
-    if len(entry.id) > MAX_ID_CHARS:
-        raise ValueError(f"id is {len(entry.id)} characters, over {MAX_ID_CHARS}")
     if not (entry.commands or entry.paths or entry.errors):
         raise ValueError("no command, path or error key")
     return entry
+
+
+def parse_cue(path: Path) -> CueEntry:
+    raw, fields, body = _front_matter(path, CUE_FIELDS)
+    name = (fields.get("name") or [""])[-1]
+    applies = (fields.get("applies") or [""])[-1]
+    if not name:
+        raise ValueError("no name")
+    if not applies:
+        raise ValueError("no applies")
+    target = (fields.get("target") or [None])[-1]
+    return CueEntry(
+        id=_entry_id(fields, path),
+        version=hashlib.sha256(raw).hexdigest()[:12],
+        name=name,
+        applies=applies,
+        text=body,
+        path=str(path),
+        target=_target(target, path) if target else None,
+    )
 
 
 def head_commit(directory: Path) -> str | None:
@@ -159,7 +234,7 @@ def head_commit(directory: Path) -> str | None:
         d = d.parent
 
 
-def load(directories: list[str]) -> Store:
+def _load(directories: list[str], parser):
     entries, owners, errors, seen = [], {}, [], {}
     for directory in directories:
         root = Path(os.path.expanduser(directory))
@@ -171,7 +246,7 @@ def load(directories: list[str]) -> Store:
             if ".git" in path.parts or path.name.lower() == "readme.md":
                 continue
             try:
-                entry = parse(path)
+                entry = parser(path)
             except (ValueError, UnicodeDecodeError) as exc:
                 errors.append(f"{path}: {exc}")
                 continue
@@ -180,4 +255,12 @@ def load(directories: list[str]) -> Store:
                 continue
             seen[entry.id] = path
             entries.append(entry)
-    return Store(entries, owners, errors)
+    return entries, owners, errors
+
+
+def load(directories: list[str]) -> Store:
+    return Store(*_load(directories, parse))
+
+
+def load_cue(directories: list[str]) -> CueStore:
+    return CueStore(*_load(directories, parse_cue))

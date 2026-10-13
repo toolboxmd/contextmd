@@ -18,7 +18,7 @@ def entry(directory, name, body, **fields):
     lines = ["---"]
     for k, v in fields.items():
         for value in v if isinstance(v, list) else [v]:
-            lines.append(f"{k.replace('_', '-')}: {value}")
+            lines.append(f"{'name' if k == 'cue_name' else k.replace('_', '-')}: {value}")
     lines += ["---", body, ""]
     path = Path(directory) / f"{name}.md"
     path.write_text("\n".join(lines))
@@ -90,6 +90,84 @@ class TargetTest(unittest.TestCase):
             st = store.load([d])
             self.assertEqual(st.entries, [])
             self.assertIn("target is only for must-know-before entries", st.errors[0])
+
+
+def cue_entry(directory, file, body, **fields):
+    """A Cue entry file; ``name`` is a front-matter field here, not the file name."""
+    return entry(directory, file, body, **{"cue_name" if k == "name" else k: v for k, v in fields.items()})
+
+
+class CueStoreTest(unittest.TestCase):
+    def test_cue_entry_loads_with_its_scored_text_and_resolved_target(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "procedures").mkdir()
+            p = cue_entry(d, "research", "AgentsMD: follow the research procedure.", id="agentsmd-research",
+                      name="Research", applies="The request asks for facts: beyond what is at hand.",
+                      target="procedures/research.md")
+            st = store.load_cue([d])
+            self.assertEqual(st.errors, [])
+            [e] = st.entries
+            self.assertEqual(e.id, "agentsmd-research")
+            self.assertEqual(e.name, "Research")
+            self.assertEqual(e.applies, "The request asks for facts: beyond what is at hand.")
+            self.assertEqual(e.doc, "Research: The request asks for facts: beyond what is at hand.")
+            self.assertEqual(e.text, "AgentsMD: follow the research procedure.")
+            self.assertEqual(e.target, os.path.realpath(Path(d) / "procedures" / "research.md"))
+            self.assertEqual(e.version, store.parse_cue(p).version)
+
+    def test_bad_cue_entries_are_reported_not_loaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            cue_entry(d, "good", "Body.", name="Good", applies="When good.")
+            cue_entry(d, "noname", "Body.", applies="When.")
+            cue_entry(d, "noapplies", "Body.", name="X")
+            cue_entry(d, "exactkey", "Body.", name="X", applies="When.", command="git push")
+            cue_entry(d, "empty", "", name="X", applies="When.")
+            cue_entry(d, "big", "x" * (store.MAX_ENTRY_BYTES + 1), name="X", applies="When.")
+            cue_entry(d, "zdup", "Body.", id="good", name="Dup", applies="When.")
+            st = store.load_cue([d])
+            self.assertEqual([e.id for e in st.entries], ["good"])
+            reasons = " | ".join(st.errors)
+            for want in ("no name", "no applies", "unknown fields: ['command']", "empty body",
+                         "UTF-8 bytes, over", "already used"):
+                self.assertIn(want, reasons)
+
+    def test_exact_key_loader_still_rejects_cue_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            cue_entry(d, "cue", "Body.", name="X", applies="When.")
+            st = store.load([d])
+            self.assertEqual(st.entries, [])
+            self.assertIn("unknown fields", st.errors[0])
+
+    def test_check_reports_both_lists(self):
+        with tempfile.TemporaryDirectory() as d:
+            keys_dir, cue_dir = Path(d) / "keys", Path(d) / "cue"
+            keys_dir.mkdir()
+            cue_dir.mkdir()
+            entry(keys_dir, "push", "Pull first.", command="git push")
+            cue_entry(cue_dir, "research", "Follow it.", name="Research", applies="When facts are asked.")
+            cfg = Path(d) / "serving.json"
+            cfg.write_text(json.dumps({"exact_keys": [str(keys_dir)], "cue": [str(cue_dir)],
+                                       "cue_url": "http://127.0.0.1:9"}))
+            out = subprocess.run([sys.executable, str(BIN), "check"], capture_output=True, text=True,
+                                 env={**os.environ, "CONTEXTMD_SERVING_CONFIG": str(cfg)})
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+            report = json.loads(out.stdout)
+            self.assertEqual([e["id"] for e in report["exact_keys"]["entries"]], ["push"])
+            self.assertEqual([e["id"] for e in report["cue"]["entries"]], ["research"])
+            self.assertEqual(report["cue"]["url"], "http://127.0.0.1:9")
+
+
+class ConfigTest(unittest.TestCase):
+    def test_cue_keys_default_to_off(self):
+        from contextmd.serve import config
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "serving.json"
+            cfg.write_text(json.dumps({"exact_keys": ["/x"]}))
+            c = config.load(cfg)
+            self.assertEqual((c.cue, c.cue_url), ([], None))
+            cfg.write_text(json.dumps({"cue": ["/c"], "cue_url": "http://h:1"}))
+            c = config.load(cfg)
+            self.assertEqual((c.cue, c.cue_url), (["/c"], "http://h:1"))
 
 
 class InstallTest(unittest.TestCase):

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0] - 2026-10-13
+
+### Added
+
+- Cue entries and the Cue service: a separate Cue entry list and loader, and the GPU-host service that scores moments with the W8A8 compiled adapter, with deadline drops and one-step logged rollback (#13)
+
 ## [0.1.3] - 2026-10-13
 
 ### Changed

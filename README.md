@@ -49,17 +49,51 @@ Answer every prompt of the PR template before opening a PR.
 - `id` defaults to the file name and must stay within 120 characters.
 - The entry version is a hash of the file, so an edited entry counts as new.
 
-`bin/contextmd-serve check` loads the store and lists bad entries.
+### Cue entries
+
+Cue serves knowledge whose moment has no trigger words, such as a research
+procedure that applies whenever a request asks for facts beyond what is at
+hand. Each Cue entry is one Markdown file in a Cue directory, which must not
+lie inside an exact-key directory (each loader rejects the other's fields):
+
+```markdown
+---
+id: agentsmd-research
+name: Research
+applies: The request asks a question whose answer is facts beyond what is at hand. Not: ...
+target: ../skills/operations/workflows/research/index.md
+---
+AgentsMD: follow the research procedure.
+```
+
+- Cue scores `<name>: <applies>`, so those texts must match what the deployed
+  adapter was trained on; edit them only together with retraining (#4).
+- An entry that scores at or above the adapter's threshold is served with its
+  `applies` line first (cut at 600 characters), so the agent can dismiss a
+  wrong fire in one read, then the body and "Read `<target>` in full."
+- `target` is optional and relative to the entry. The body, `id` and version
+  follow the exact-key rules.
+
+`bin/contextmd-serve check` loads both stores and lists bad entries for each.
 
 ### What is served when
 
 | Moment | Served |
 | --- | --- |
 | Session start | The session-start files, outside the turn budgets (Claude Code). After compaction or `/clear` a new context epoch starts and they are served again. |
-| User message | A new Chromeria run is a new turn: an 8,000-byte serve budget and a 2,000-byte deny budget. |
+| User message | A new Chromeria run is a new turn: an 8,000-byte serve budget and a 2,000-byte deny budget. Cue scores the conversation and its fires are served at once (on Grok, at the next `PreToolUse`). |
 | Before a tool call | A matching must-know-before entry denies the call. A pointer rule keeps denying until the agent reads its target in this session and context epoch; an inline rule lifts once the model was shown it whole. After 3 denies without that, the next call passes, logged `not_read_capped`. One deny carries every whole rule that fits; the rest deny their next matching call. |
-| Tool result or failure | Other matching entries, first fit within the serve budget and 2,000 bytes per output. On Grok, which discards this output, they are printed at the next `PreToolUse`. |
+| Tool result or failure | Other matching entries and the Cue fires, first fit within the serve budget and 2,000 bytes per output. On Grok, which discards this output, they are printed at the next `PreToolUse`. |
 | Before done | Logged only. |
+
+Cue runs on the GPU serving host (see [Cue service](#cue-service)). A user
+message or a failed call is scored at once and waits at most 650 ms. Before a
+tool call Cue only starts scoring, and the tool result collects the score, so a
+tool slower than Cue costs no wait. One session in ten, fixed per session, is
+the holdout: Cue's fires there are logged as `holdout` and never served. If the
+service refuses a connection, Chromeria stops calling it for every session on
+that machine until a probe every 30 seconds sees it answer; a slow reply is a
+`timeout` for that call only. Exact keys never wait for Cue.
 
 Served text says it comes from the user's own ContextMD store. On OpenCode it is
 added to the user's message rather than the tool output.
@@ -77,9 +111,15 @@ The stores and session-start files are named in `~/.config/contextmd/serving.jso
 ```json
 {
   "exact_keys": ["~/.local/share/contextmd/exact-keys"],
-  "session_start": [{"path": "~/notes/PACK.md", "max_chars": 4000}]
+  "session_start": [{"path": "~/notes/PACK.md", "max_chars": 4000}],
+  "cue": ["~/dev/toolboxmd/agentsmd/contextmd-cue"],
+  "cue_url": "http://100.116.0.2:8710"
 }
 ```
+
+Cue is off unless both `cue` and `cue_url` are set. Add them only once every
+Chromeria server reading the file has the Cue lane: an older server rejects a
+config with unknown keys and then serves nothing.
 
 Install the hook per harness for the Chromeria base directory:
 
@@ -106,8 +146,54 @@ hook gives up within a second and the call runs unserved.
 hooks then call nothing. `on` turns it back on; `status` shows the state and
 the credential's expiry. `bin/contextmd-serve log --base ~/.t3 [--session ID]`
 prints the serving log as JSON lines: per moment its run, epoch and status,
-per entry its outcome. It never holds prompt, command or result text.
+per entry its outcome. It never holds prompt, command or result text. Each
+moment also records Cue's status (`ok`, `started`, `not_called`, `timeout`,
+`connect_failed`, `overload`, `lost`, `error`), the adapter, the round trip
+(`cue_ms`) and how long the moment waited for it (`cue_wait_ms`); each Cue
+candidate records its score and an outcome such as `below_threshold`,
+`holdout` or `injected`.
 
 Run the tests with `python3 -m unittest discover -s tests -t .`. The contract
 suite in `tests/test_contract.py` runs the real hook against a Chromeria dev
 server when `CONTEXTMD_CHROMERIA` names a Chromeria checkout.
+
+## Cue service
+
+The Cue service runs on the GPU serving host (bestia, RTX 3090) as the user
+unit `contextmd-cue.service`. It scores each request's window against the
+entries the request names, one request at a time; a request still queued after
+its deadline (1.5 s) is dropped with `503`. It builds the window from the
+conversation items it receives, in the format the adapter was trained on
+(`contextmd/cue/window.py`), and keeps windows only in memory. It binds only
+after its warm-up, so while it starts, callers see a refused connection.
+
+Variants are named in `~/.config/contextmd-cue/service.json` (template
+[`deploy/cue/service.example.json`](deploy/cue/service.example.json)): base
+model, adapter, quantization, compile and the variant's own threshold. One is
+`active`, the one before it `previous`.
+
+| Canonical source | Deployed copy on bestia | Mode |
+| --- | --- | --- |
+| `bin/contextmd-cue`, `contextmd/` | `~/.local/share/contextmd-cue/app/` | files `0644`, launcher `0755` |
+| `deploy/cue/contextmd-cue.service` | `~/.config/systemd/user/contextmd-cue.service` | `0644` |
+| `deploy/cue/requirements.txt` | `~/.local/share/contextmd-cue/venv` (Python 3.12) | |
+| `deploy/cue/service.example.json` | `~/.config/contextmd-cue/service.json` | `0600` |
+
+All owned by `luke`. The adapter is copied to
+`~/.local/share/contextmd-cue/adapters/` and checked by SHA-256.
+
+- **Install or update:** copy the sources at a recorded commit, `systemctl
+  --user daemon-reload`, `systemctl --user restart contextmd-cue`, then wait
+  for `bin/contextmd-cue status ~/.config/contextmd-cue/service.json` to show
+  `"ok": true` (a compiled variant warms up for 1.5 to 4 minutes).
+- **Roll back:** `bin/contextmd-cue rollback ~/.config/contextmd-cue/service.json`
+  swaps `active` and `previous`, appends the switch to
+  `~/.local/state/contextmd-cue/deployments.jsonl` and restarts the unit;
+  `deploy <id>` makes another variant active the same way. Every serving-log
+  moment records the adapter that scored it.
+- **Drift check (read-only):** compare `sha256sum` of each deployed file with
+  the canonical file at the recorded commit.
+- **Remove:** `systemctl --user disable --now contextmd-cue`, delete the unit
+  and `~/.local/share/contextmd-cue`, `~/.config/contextmd-cue`,
+  `~/.cache/contextmd-cue` and `~/.local/state/contextmd-cue`, then remove
+  `cue` and `cue_url` from each machine's `serving.json`.
