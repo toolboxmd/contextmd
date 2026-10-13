@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.0] - 2026-10-13
+
+### Added
+
+- Daily serving health check: rates the serving log per harness and files defects at their owners (#40)
+
 ## [0.4.0] - 2026-10-13
 
 ### Added

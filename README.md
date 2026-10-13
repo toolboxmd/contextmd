@@ -185,6 +185,36 @@ else `$AGENT_OBSERVER_DB`, else Observer's default
 schema 3 (Observer 1.0.1); with any other schema every serve is
 `observer_failed`.
 
+### Daily health check
+
+`bin/contextmd-serve health --base ~/.t3 [--from DATE --to DATE] [--dry-run]`
+rates one machine's serving log over the window since its last run. The
+first run covers the last 24 hours, and an explicit slice never moves the
+stored window. It files or updates one Issue per defect class in the
+repository that owns it. It reads only stored values, read-only:
+
+- **Moment statuses per harness.** It files a status other than `ok` when
+  there are at least 10 such moments, they are over 5% of that harness's
+  moments, and the harness has at least 100 moments. Statuses the server
+  does not define are reported as unknown.
+- **Candidate outcomes.** It files `delivery_unverified`, `unverified`,
+  `hidden`, `no_seam` and `carry_expired` at 10 rows. Every other outcome is
+  reported only, including `failed_by_output`, `cut_budget`, `truncated` and
+  `unsupported_key`.
+- **Heartbeats.** An expected harness with no moments reads
+  `no calls, coverage unknown` while the heartbeat is fresh, and
+  `server stale` when it is not.
+
+Each Issue carries a `ContextMD-Class:` line. A later window adds a comment.
+Each post is identified by machine, class and window, so the same
+observation is never posted twice, while another machine's report for the
+same window still is. Bodies hold counts, rates,
+the window and at most 10 ids; no reasons, keys, paths or session text.
+Configuration lives in `~/.config/contextmd/health.json` (`machine`,
+`expected_harnesses`, `seed` mapping a class to an existing Issue), and the
+stored window in `~/.local/state/contextmd/health.json`. The daily launchd
+job is described in [`deploy/health/README.md`](deploy/health/README.md).
+
 ### Serve card
 
 `bin/contextmd-serve card --base ~/.t3 --candidate ID [--json]` shows one
