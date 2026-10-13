@@ -537,6 +537,45 @@ class OpenCodePluginTest(unittest.TestCase):
             self.assertEqual((out["whileOff"], out["afterOff"], out["settlesWhileOff"]), ([], [], 0))
 
 
+TRUNCATION_SCRIPT = r"""
+const [pluginPath] = process.argv.slice(2);
+const posted = [];
+globalThis.fetch = (url, init) => {
+  if (url.endsWith("/moment")) posted.push(JSON.parse(init.body));
+  return Promise.resolve({ status: 204, json: async () => ({}) });
+};
+const { default: plugin } = await import(pluginPath);
+const hooks = await plugin({ directory: "/tmp" });
+const after = (output, metadata) =>
+  hooks["tool.execute.after"]({ tool: "read", sessionID: "s", callID: "c", args: { filePath: "/r.md" } },
+                              { output, metadata });
+// A line clipped early in a long read: OpenCode reports truncated: false, and the 4 KB
+// slice the plugin forwards no longer contains the marker.
+await after("x".repeat(100) + "... (line truncated to 2000 chars)\n" + "y".repeat(8000), { truncated: false });
+await after("whole file", { truncated: true });
+await after("whole file", { truncated: false });
+console.log(JSON.stringify(posted.map((p) => p.output.metadata.truncated ?? null)));
+"""
+
+
+class OpenCodeTruncationTest(unittest.TestCase):
+    def test_forwards_a_cut_read_even_when_the_marker_falls_outside_the_slice(self):
+        # Pointer rules lift only on a full read (toolboxmd/chromeria#225).
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            (base / "userdata" / "contextmd").mkdir(parents=True)
+            (base / "userdata" / "server-runtime.json").write_text(json.dumps({"origin": "http://127.0.0.1:1"}))
+            (base / "userdata" / "contextmd" / "hook-credential").write_text(json.dumps({"token": "t"}))
+            from contextmd.serve import install
+            plugin = base / "contextmd.mjs"
+            plugin.write_text(install.plugin_source(base))
+            script = base / "run.mjs"
+            script.write_text(TRUNCATION_SCRIPT)
+            done = subprocess.run(["node", str(script), str(plugin)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(json.loads(done.stdout), [True, True, False])
+
+
 class HookScriptTest(unittest.TestCase):
     """The shell hook against a stand-in server: credential, settle and failing open."""
 
