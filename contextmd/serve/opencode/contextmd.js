@@ -137,11 +137,15 @@ export default async function contextmd(ctx) {
     "tool.execute.after": async (input, output) => {
       const turn = turns.get(input.sessionID) || 0;
       const out = output && typeof output.output === "string" ? output.output : "";
+      const meta = (output && output.metadata) || {};
+      // A cut read must stay partial (chromeria#225): OpenCode's own flag, or a line it clipped,
+      // whose marker may fall outside the slice forwarded below.
+      const truncated = meta.truncated === true || /\(line truncated to \d+ chars\)/.test(out);
       const got = await moment({
         hook: "tool.execute.after",
         directory,
         input: { tool: input.tool, sessionID: input.sessionID, callID: input.callID, args: input.args || {} },
-        output: { metadata: { exit: output && output.metadata ? output.metadata.exit : undefined }, output: out.slice(-MAX_OUTPUT) },
+        output: { metadata: { exit: meta.exit, truncated }, output: out.slice(-MAX_OUTPUT) },
       });
       const text = got && got.reply && got.reply.context;
       if (text) queue(input.sessionID, turn, text, got.settle);

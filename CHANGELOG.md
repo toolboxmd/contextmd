@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.1] - 2026-10-13
+
+### Changed
+
+- The OpenCode plugin forwards when a read was cut, so a clipped read no longer lifts a pointer rule (toolboxmd/chromeria#225).
+
 ## [0.5.0] - 2026-10-13
 
 ### Added
