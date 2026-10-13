@@ -555,6 +555,47 @@ class HookScriptTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_the_claude_hook_is_silent_inside_grok(self):
+        # Grok also runs Claude Code's settings.json hooks; its own hook file serves it (#32).
+        import http.server
+        import threading
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("content-length") or 0))
+                seen.append(self.headers.get("x-contextmd-harness"))
+                out = b'{"rule":1}'
+                self.send_response(200)
+                self.send_header("content-length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        hook = BIN.parent / "contextmd-hook"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                base = Path(d)
+                (base / "userdata" / "contextmd").mkdir(parents=True)
+                (base / "userdata" / "server-runtime.json").write_text(
+                    json.dumps({"origin": f"http://127.0.0.1:{server.server_port}"}))
+                (base / "userdata" / "contextmd" / "hook-credential").write_text(json.dumps({"token": "tok"}))
+                env = dict(os.environ, GROK_HOOK_NAME="contextmd")
+                run = lambda harness: subprocess.run(["/bin/sh", str(hook), harness, str(base)], input="{}",
+                                                     capture_output=True, text=True, timeout=10, env=env)
+                inside = run("claude")
+                self.assertEqual((inside.returncode, inside.stdout, inside.stderr), (0, "", ""))
+                self.assertEqual(seen, [])
+                self.assertEqual(run("grok").stdout, '{"rule":1}')
+                self.assertEqual(seen[0], "grok")
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_an_error_status_prints_nothing(self):
         import http.server
         import threading

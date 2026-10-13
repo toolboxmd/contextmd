@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] - 2026-10-13
+
+### Changed
+
+- The claude hook stays silent inside Grok, which runs Claude Code's hooks too; Grok is served by its own hook (#32).
+
 ## [0.1.1] - 2026-10-13
 
 ### Changed
