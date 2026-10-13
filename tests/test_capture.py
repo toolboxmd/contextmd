@@ -166,7 +166,7 @@ class PassTest(unittest.TestCase):
                      "assistant_message", text="judged")]
         self.ch = chromeria_db(self.tmp / "ch.sqlite", threads, its)
         self.ao = observer_db(self.tmp / "ao.sqlite", [
-            {"thread": U, "key": "codex:u", "native": "u", "submissions": [("sub-2", "never use rm -rf")],
+            {"thread": U, "key": "codex:u", "native": "u", "user_messages": [("sub-2", "never use rm -rf")],
              "events": [(11, "call-4", epoch("2026-10-10T09:02:00Z")), (12, "x", epoch("2026-10-10T09:01:30Z"))]},
             {"thread": W, "key": "codex:w", "native": "w", "events": [(21, "y", epoch("2026-10-10T10:06:00Z"))]},
             {"thread": B, "key": "codex:b", "native": "b", "events": [(31, "z", epoch("2026-10-10T11:30:00Z"))]},
@@ -261,9 +261,13 @@ class PassTest(unittest.TestCase):
         self.assertEqual(it["found_by"], ["grok", "sol"])
         self.assertEqual(it["state"], "extracted")
         self.assertEqual(it["key"]["event"], f"{self.U}-i2")
-        self.assertEqual(it["moment"]["observer"], {"session_key": "codex:u", "ref": "submission",
+        self.assertEqual(it["moment"]["observer"], {"session_key": "codex:u", "ref": "user_message",
                                                     "id": "sub-2", "anchor": "exact"})
         self.assertTrue(observer.exists(self.ao, it["moment"]["observer"]))
+        # inbox items written before Observer schema 3 name the same record "submission"
+        legacy = dict(it["moment"]["observer"], ref="submission")
+        self.assertTrue(observer.exists(self.ao, legacy))
+        self.assertFalse(observer.exists(self.ao, dict(legacy, id="sub-missing")))
         self.assertEqual(it["models"]["extractors"]["sol"]["observed"], ["gpt-6.1-sol-2026"])
         self.assertEqual(it["models"]["judge"]["requested"], "claude-opus-5-5")
         for field in ("source_time", "scope", "learned_from", "grade", "found_by"):

@@ -2,7 +2,7 @@
 
 Capture reads Observer's ledger read-only after a successful
 ``agent-observer sync``. Observer maps each Chromeria thread to its native
-session; every inbox item is anchored to an Observer event or submission in
+session; every inbox item is anchored to an Observer event or user message in
 that session, and every delegated job's actual model and token use come from
 the job's own session.
 """
@@ -48,7 +48,7 @@ def connect(path: str) -> sqlite3.Connection:
 
 
 def text_hash(text: str) -> str:
-    """Observer's submission text hash (agent_observer.ingest.text_hash)."""
+    """Observer's user message text hash (agent_observer.ingest.text_hash)."""
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
 
 
@@ -78,7 +78,7 @@ def anchor(con: sqlite3.Connection, session_key: str, *, native_id: str | None,
     """The Observer record a transcript line's moment points at.
 
     Exact when Observer holds the same native item (tool call, assistant
-    block) or the same submitted text; otherwise the first Observer event of
+    block) or the same user message text; otherwise the first Observer event of
     the session at or after the line's time (``next``), else the last one
     before it (``prev``). None only when the session has no events.
     """
@@ -91,10 +91,10 @@ def anchor(con: sqlite3.Connection, session_key: str, *, native_id: str | None,
             return {"session_key": session_key, "ref": "event", "id": row["id"], "anchor": "exact"}
     if kind in ("user", "brief") and text:
         row = con.execute(
-            "SELECT native_id FROM submissions WHERE session_key=? AND text_hash=? LIMIT 1",
+            "SELECT native_id FROM user_messages WHERE session_key=? AND text_hash=? LIMIT 1",
             (session_key, text_hash(text))).fetchone()
         if row:
-            return {"session_key": session_key, "ref": "submission", "id": row["native_id"],
+            return {"session_key": session_key, "ref": "user_message", "id": row["native_id"],
                     "anchor": "exact"}
     t = _epoch(ts)
     if t is not None:
@@ -114,8 +114,8 @@ def anchor(con: sqlite3.Connection, session_key: str, *, native_id: str | None,
 def exists(con: sqlite3.Connection, ref: dict) -> bool:
     if ref.get("ref") == "event":
         q = "SELECT 1 FROM events WHERE id=? AND session_key=?"
-    else:
-        q = "SELECT 1 FROM submissions WHERE native_id=? AND session_key=?"
+    else:  # "user_message", or "submission" in items written before Observer schema 3
+        q = "SELECT 1 FROM user_messages WHERE native_id=? AND session_key=?"
     return con.execute(q, (ref["id"], ref["session_key"])).fetchone() is not None
 
 

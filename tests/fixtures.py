@@ -40,7 +40,7 @@ def chromeria_db(path: Path, threads: list[dict], items: list[dict]) -> sqlite3.
 
 
 def observer_db(path: Path, sessions: list[dict]) -> sqlite3.Connection:
-    """sessions: thread, key, native, events [(id, native_id, epoch)], submissions [(native_id, text)]."""
+    """sessions: thread, key, native, events [(id, native_id, epoch)], user_messages [(native_id, text)] (Observer schema 3)."""
     from contextmd.capture.observer import text_hash
     con = sqlite3.connect(path)
     con.executescript("""
@@ -49,7 +49,7 @@ def observer_db(path: Path, sessions: list[dict]) -> sqlite3.Connection:
     CREATE TABLE sessions (session_key TEXT PRIMARY KEY, harness TEXT, native_id TEXT,
       project_dir TEXT, updated_at REAL);
     CREATE TABLE events (id INTEGER PRIMARY KEY, session_key TEXT, ts REAL, family TEXT, native_id TEXT);
-    CREATE TABLE submissions (native_id TEXT PRIMARY KEY, session_key TEXT, text_hash TEXT);
+    CREATE TABLE user_messages (native_id TEXT PRIMARY KEY, session_key TEXT, text_hash TEXT);
     CREATE TABLE responses (response_id TEXT PRIMARY KEY, session_key TEXT, model TEXT,
       input_tokens INTEGER, cached_input_tokens INTEGER, output_tokens INTEGER,
       reasoning_output_tokens INTEGER, total_tokens INTEGER, is_overlap INTEGER DEFAULT 0);
@@ -61,8 +61,8 @@ def observer_db(path: Path, sessions: list[dict]) -> sqlite3.Connection:
                     (s["key"], "codex", s["native"], s.get("project", "/repo"), 1.0))
         for eid, native, ts in s.get("events", []):
             con.execute("INSERT INTO events VALUES(?,?,?,?,?)", (eid, s["key"], ts, "tool_call", native))
-        for native, text in s.get("submissions", []):
-            con.execute("INSERT INTO submissions VALUES(?,?,?)", (native, s["key"], text_hash(text)))
+        for native, text in s.get("user_messages", []):
+            con.execute("INSERT INTO user_messages VALUES(?,?,?)", (native, s["key"], text_hash(text)))
         for n, (model, tokens) in enumerate(s.get("responses", [])):
             con.execute("INSERT INTO responses VALUES(?,?,?,?,?,?,?,?,0)",
                         (f"{s['key']}-{n}", s["key"], model, tokens, 0, tokens // 10, 0, tokens))
