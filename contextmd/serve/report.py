@@ -1,11 +1,15 @@
 """The serve evidence report: what each served entry did, from the serving log and Agent Observer, no model.
 
-One row per served candidate (settled ``injected``, or a deny another hook ``hidden``):
+One row per served candidate: every outcome of a settled delivery (``SERVED``), including a deny
+that another hook's deny replaced (``hidden``):
 
-- ``shown``: ``yes`` when Chromeria saw the deny text in what the model was shown, ``no`` when it was
-  hidden, ``unproven`` otherwise (every context serve today, and denies on hosts without that check);
-- ``lift``: for a deny, how it lifted (``read``, ``delivered_inline``, ``not_read_capped``) or ``open``;
-- ``late``: a must-know-before entry served as context on the result of a call its own key matched;
+- ``shown``: ``yes`` when Chromeria saw the deny text in what the model was shown, ``no`` when another
+  hook's deny replaced it, ``unproven`` otherwise (every context serve today, and denies on hosts
+  without that check or whose check never arrived);
+- ``lift``: for a deny, how its rule lifted (``read``, ``delivered_inline``, ``not_read_capped``),
+  ``open`` when the session went on without that, or ``pending`` when nothing came after it yet;
+- ``late``: a must-know-before entry served after a call its own key matched: as context on that
+  call's result, or as a Grok carry selected there;
 - ``evidence``: ``anchored`` to the Observer event of the served tool call, or why not: ``not_imported``,
   ``no_native_record``, ``observer_failed``.
 
@@ -22,8 +26,13 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+SERVED = ("injected", "truncated", "unverified", "awaiting_evidence", "hidden")
 CANARY_PREFIX = "live-canary-"  # the per-host canary entries (#21); test serves, not use
 OBSERVER_LIMIT = 1_000_000
+
+
+class LogError(Exception):
+    """The serving log is not one this report can read."""
 
 
 class Observer:
@@ -63,17 +72,24 @@ def rows(db_path: Path, observer: Observer, since: float | None = None):
     db.row_factory = sqlite3.Row
     try:
         served = db.execute(
-            """SELECT c.id AS candidate_id, c.entry, c.version, c.seam, c.outcome,
+            f"""SELECT c.id AS candidate_id, c.entry, c.version, c.seam, c.outcome,
                       m.id AS moment_id, m.received_at, m.harness, m.kind, m.session, m.epoch, m.tool_use_id,
-                      (SELECT checked FROM claims cl WHERE cl.candidate_id = c.id AND cl.settled = 1
+                      (SELECT checked FROM claims cl WHERE cl.candidate_id = c.id
                         ORDER BY cl.checked IS NULL LIMIT 1) AS checked,
                       d.lifted, d.lift_outcome,
-                      EXISTS (SELECT 1 FROM deny_state k WHERE k.entry = c.entry AND k.version = c.version) AS must_know
+                      EXISTS (SELECT 1 FROM moments later WHERE later.harness = m.harness
+                              AND later.session = m.session AND later.received_at > m.received_at) AS went_on,
+                      EXISTS (SELECT 1 FROM deny_state k WHERE k.entry = c.entry AND k.version = c.version) AS must_know,
+                      (SELECT om.kind FROM claims pc JOIN carries ca ON ca.delivery = pc.delivery
+                         JOIN candidates oc ON oc.id = ca.candidate_id JOIN moments om ON om.id = oc.moment_id
+                       WHERE pc.candidate_id = c.id LIMIT 1) AS carried_at
                FROM candidates c JOIN moments m ON m.id = c.moment_id
                LEFT JOIN deny_state d ON c.seam = 'deny' AND d.harness = m.harness AND d.session = m.session
                     AND d.epoch = m.epoch AND d.entry = c.entry AND d.version = c.version
-               WHERE c.outcome IN ('injected', 'hidden') AND m.received_at >= ?
-               ORDER BY m.received_at, c.id""", (since or 0,)).fetchall()
+               WHERE c.outcome IN ({",".join("?" * len(SERVED))}) AND m.received_at >= ?
+               ORDER BY m.received_at, c.id""", (*SERVED, since or 0)).fetchall()
+    except sqlite3.Error as exc:
+        raise LogError(f"cannot read the serving log {db_path}: {exc}") from exc
     finally:
         db.close()
     out, canaries = [], 0
@@ -81,17 +97,27 @@ def rows(db_path: Path, observer: Observer, since: float | None = None):
         if (r["entry"] or "").startswith(CANARY_PREFIX):
             canaries += 1
             continue
+        after_call = (r["seam"] == "context" and r["kind"] in ("tool_result", "tool_failure")) or (
+            r["seam"] == "carry_print" and r["carried_at"] in ("tool_result", "tool_failure"))
         ev, event_id = evidence(observer, r["harness"], r["session"], r["tool_use_id"], r["received_at"])
         out.append({
             "moment_id": r["moment_id"], "candidate_id": r["candidate_id"], "at": r["received_at"],
-            "harness": r["harness"], "session": r["session"], "tool_use_id": r["tool_use_id"],
+            "harness": r["harness"], "session": r["session"], "epoch": r["epoch"], "tool_use_id": r["tool_use_id"],
             "entry": r["entry"], "version": r["version"], "seam": r["seam"], "moment": r["kind"],
-            "shown": "no" if r["outcome"] == "hidden" else "yes" if r["checked"] == "shown" else "unproven",
-            "lift": None if r["seam"] != "deny" else (r["lift_outcome"] if r["lifted"] else "open"),
-            "late": bool(r["seam"] == "context" and r["kind"] in ("tool_result", "tool_failure") and r["must_know"]),
+            "outcome": r["outcome"],
+            "shown": "no" if r["checked"] == "hidden" or r["outcome"] == "hidden"
+                     else "yes" if r["checked"] == "shown" else "unproven",
+            "lift": None if r["seam"] != "deny" else r["lift_outcome"] if r["lifted"]
+                    else "open" if r["went_on"] else "pending",
+            "late": bool(after_call and r["must_know"]),
             "evidence": ev, "event_id": event_id,
         })
     return out, canaries
+
+
+def rule(r: dict) -> tuple:
+    """One deny rule in one session and context epoch: the unit its lift belongs to."""
+    return r["harness"], r["session"], r["epoch"], r["entry"], r["version"]
 
 
 def _top(counter: Counter, n: int = 4) -> str:
@@ -100,25 +126,26 @@ def _top(counter: Counter, n: int = 4) -> str:
     return text + (f", {len(items) - n} more" if len(items) > n else "")
 
 
-# Each card: who it selects, what happened, why it matters. Every sentence ends with a full stop.
+# Each card: who it selects, what happened, why it matters, and what it counts: serves, or rules
+# (one deny rule per session and epoch, however often it denied). Every sentence ends with a full stop.
 CARDS = [
-    ("Late", lambda r: r["late"],
+    ("Late", lambda r: r["late"], "serves",
      "A before-action rule was shown after its own command had already run.",
      "It came too late for that action and used the turn's serve budget (toolboxmd/chromeria#231)."),
-    ("Hidden", lambda r: r["shown"] == "no",
-     "Another hook's deny replaced this rule before the model saw it.",
-     "The action ran without the rule; the rule stays armed for the next call."),
-    ("Passed without reading", lambda r: r["lift"] == "not_read_capped",
+    ("Hidden", lambda r: r["shown"] == "no", "serves",
+     "The call was denied, but the model saw another hook's deny reason instead of this rule.",
+     "The rule did not reach the agent and stays armed; on Grok some may be misread (toolboxmd/chromeria#228)."),
+    ("Passed without reading", lambda r: r["lift"] == "not_read_capped", "rules",
      "The agent was denied three times without reading the pointed file, then the call passed.",
      "This is the one kind of ignored rule the log can see without a model."),
-    ("Never lifted", lambda r: r["lift"] == "open",
-     "A deny was served but the agent never read the pointed file afterwards.",
+    ("Never lifted", lambda r: r["lift"] == "open", "rules",
+     "The session went on after a deny without the agent reading the pointed file.",
      "The agent dropped the action or worked around it; only the transcript can tell which."),
-    ("Not proven shown", lambda r: r["shown"] == "unproven",
+    ("Not proven shown", lambda r: r["shown"] == "unproven", "serves",
      "The hook delivered these serves, but nothing records that the model saw them.",
      "An ignored label on them cannot be trusted, so the outcome judge will not use one."),
-    ("No Observer record", lambda r: r["evidence"] != "anchored",
-     "Agent Observer has no event for these served tool calls.",
+    ("No Observer record", lambda r: r["evidence"] != "anchored", "serves",
+     "Agent Observer gave no event for these served tool calls.",
      "The outcome judge cannot label a serve without its transcript."),
 ]
 
@@ -134,11 +161,16 @@ def render(served: list[dict], canaries: int) -> str:
         head.append(f"By seam: {_top(Counter(r['seam'] for r in served))}. "
                     f"By host: {_top(Counter(r['harness'] for r in served))}.")
     parts = ["\n".join(head)]
-    for title, picks, happened, why in CARDS:
+    for title, picks, unit, happened, why in CARDS:
         hit = [r for r in served if picks(r)]
+        if unit == "rules":
+            hit = list({rule(r): r for r in hit}.values())
+            total = len({rule(r) for r in served if r["seam"] == "deny"})
+        else:
+            total = len(served)
         if not hit:
             continue
-        facts = f"{len(hit)} of {len(served)} serves. Entries: {_top(Counter(r['entry'] for r in hit))}."
+        facts = f"{len(hit)} of {total} {unit}. Entries: {_top(Counter(r['entry'] for r in hit))}."
         if title == "No Observer record":
             facts += f" Reasons: {_top(Counter(r['evidence'] for r in hit))}."
         else:
@@ -148,6 +180,7 @@ def render(served: list[dict], canaries: int) -> str:
 
 
 def parse_since(text: str | None) -> float | None:
+    """An ISO date or time, UTC unless it names a zone; ValueError otherwise."""
     if not text:
         return None
     when = datetime.fromisoformat(text)

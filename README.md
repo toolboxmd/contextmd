@@ -157,14 +157,19 @@ candidate records its score and an outcome such as `below_threshold`,
 
 `bin/contextmd-serve report --base ~/.t3 [--since 2026-10-13] [--json]` shows
 what each served entry did, from the serving log and Agent Observer, with no
-model. Per serve it records:
+model. It covers every serve the hook settled (`injected`, `truncated`,
+`unverified`, `awaiting_evidence`) and every deny another hook replaced
+(`hidden`). Per serve it records:
 
 - `shown`: `yes` when Chromeria saw the deny text in what the model was shown,
-  `no` when another hook's deny hid it, `unproven` otherwise (context serves,
-  and denies on Codex and OpenCode);
-- `lift`: how a deny lifted (`read`, `delivered_inline`, `not_read_capped`),
-  or `open`;
-- `late`: a must-know-before entry served as context after its own command ran;
+  `no` when another hook's deny reason replaced it, `unproven` otherwise
+  (context serves, denies on Codex and OpenCode, and denies whose check never
+  arrived);
+- `lift`: how a deny's rule lifted (`read`, `delivered_inline`,
+  `not_read_capped`), `open` when the session went on without that, or
+  `pending` when nothing came after it yet;
+- `late`: a must-know-before entry served after its own command ran, as
+  context on its result or as a Grok carry selected there;
 - `evidence`: `anchored` to the Observer event of the served call, or
   `not_imported`, `no_native_record` (Codex keeps no record of a denied call)
   or `observer_failed`.

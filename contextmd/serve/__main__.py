@@ -61,7 +61,16 @@ def main(argv=None) -> int:
         if not db.exists():
             print(f"No serving log at {db}.")
             return 0
-        served, canaries = report.rows(db, report.Observer(ns.observer), report.parse_since(ns.since))
+        try:
+            since = report.parse_since(ns.since)
+        except ValueError:
+            print(f"contextmd-serve report: --since needs an ISO date or time, not {ns.since!r}")
+            return 2
+        try:
+            served, canaries = report.rows(db, report.Observer(ns.observer), since)
+        except report.LogError as exc:
+            print(f"contextmd-serve report: {exc}")
+            return 1
         print("\n".join(json.dumps(r) for r in served) if ns.json else report.render(served, canaries))
         return 0
     p = install.paths(base)
