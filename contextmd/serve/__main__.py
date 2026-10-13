@@ -5,6 +5,8 @@
     contextmd-serve off | on | status --base DIR     the one switch for all serving through DIR
     contextmd-serve log --base DIR [--session ID]    the serving log as JSON lines
     contextmd-serve check                            load the exact-key and Cue stores and report errors
+    contextmd-serve report --base DIR [--since DATE] [--json]
+                                                     what each served entry did: shown, read, late, Observer record
 """
 
 from __future__ import annotations
@@ -32,6 +34,12 @@ def main(argv=None) -> int:
     lp.add_argument("--base", required=True, type=Path)
     lp.add_argument("--session")
     sub.add_parser("check")
+    rp = sub.add_parser("report")
+    rp.add_argument("--base", required=True, type=Path)
+    rp.add_argument("--since", help="ISO date or time, UTC unless it names a zone")
+    rp.add_argument("--observer-db", type=Path, help="Agent Observer's ledger, read-only"
+                    " (default: $AGENT_OBSERVER_DB, else Observer's default path)")
+    rp.add_argument("--json", action="store_true", help="one JSON row per serve instead of cards")
     ns = ap.parse_args(argv)
     if ns.cmd == "check":
         cfg = config.load()
@@ -48,6 +56,24 @@ def main(argv=None) -> int:
         }, indent=2))
         return 1 if st.errors or cue.errors else 0
     base = ns.base.expanduser().resolve()
+    if ns.cmd == "report":
+        from . import report
+        db = base / "userdata" / "contextmd.sqlite"
+        if not db.exists():
+            print(f"No serving log at {db}.")
+            return 0
+        try:
+            since = report.parse_since(ns.since)
+        except ValueError:
+            print(f"contextmd-serve report: --since needs an ISO date or time, not {ns.since!r}")
+            return 2
+        try:
+            served, canaries = report.rows(db, report.Observer(ns.observer_db), since)
+        except report.LogError as exc:
+            print(f"contextmd-serve report: {exc}")
+            return 1
+        print("\n".join(json.dumps(r) for r in served) if ns.json else report.render(served, canaries))
+        return 0
     p = install.paths(base)
     if ns.cmd == "install":
         try:

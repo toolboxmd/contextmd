@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.0] - 2026-10-13
+
+### Added
+
+- Serve evidence report: what each served entry did, shown, read, late and its Observer record, with no model (#15)
+
 ## [0.2.0] - 2026-10-13
 
 ### Added

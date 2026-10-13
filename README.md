@@ -153,6 +153,38 @@ moment also records Cue's status (`ok`, `started`, `not_called`, `timeout`,
 candidate records its score and an outcome such as `below_threshold`,
 `holdout` or `injected`.
 
+### Serve evidence report
+
+`bin/contextmd-serve report --base ~/.t3 [--since 2026-10-13] [--json]` shows
+what each served entry did, from the serving log and Agent Observer, with no
+model. It covers every serve the hook settled (`injected`, `truncated`,
+`unverified`, `awaiting_evidence`) and every deny whose text Chromeria's
+check did not find in the call's recorded output (`hidden`). Per serve it
+records:
+
+- `shown`: `yes` when Chromeria found the deny text in the call's recorded
+  output, `no` when its check did not find it there, `unproven` otherwise
+  (context serves, denies on Codex and OpenCode, and denies whose check never
+  arrived);
+- `lift`: how a deny's rule lifted (`read`, `delivered_inline`,
+  `not_read_capped`), `open` when the session went on without that, or
+  `pending` when nothing came after it yet;
+- `late`: a must-know-before entry served after its own command ran, as
+  context on its result or as a Grok carry selected there;
+- `evidence`: `anchored` to the Observer event of the served call, or
+  `not_imported`, `no_native_record` (Codex keeps no record of a denied call)
+  or `observer_failed`.
+
+Without `--json` it prints one short card per problem it finds: what happened,
+why it matters, then the counts. Canary entries (`live-canary-*`) are left
+out. The report changes nothing. It opens Agent Observer's ledger read-only
+with SQLite, because Observer's `trace` command opens it read-write
+(toolboxmd/agent-observer#73). The ledger path comes from `--observer-db`,
+else `$AGENT_OBSERVER_DB`, else Observer's default
+`~/.local/state/agent-observer/observer.db`. The report reads only ledger
+schema 3 (Observer 1.0.1); with any other schema every serve is
+`observer_failed`.
+
 Run the tests with `python3 -m unittest discover -s tests -t .`. The contract
 suite in `tests/test_contract.py` runs the real hook against a Chromeria dev
 server when `CONTEXTMD_CHROMERIA` names a Chromeria checkout.
