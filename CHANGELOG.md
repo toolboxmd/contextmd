@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3] - 2026-10-13
+
+### Changed
+
+- Objective: a judge of real moments replaces the benchmark
+
 ## [0.1.2] - 2026-10-13
 
 ### Changed
