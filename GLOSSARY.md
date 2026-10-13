@@ -48,6 +48,15 @@ reads it before its next action.
 **Holdout**:
 The comparison group of sessions, one in ten, that Cue does not serve.
 
+**Serve card**:
+One served entry as the outcome judge and the user read it: the rule as
+served, how it was delivered, and the events from the served call to the next
+message into the session.
+
+**Outcome label**:
+The judge's verdict on one serve card: `irrelevant`, `wrong`, `followed`,
+`ignored` or `no_governed_action`, citing events.
+
 **Missed serving**:
 An entry that was not served when it applied, counted only when the session
 then learned it the hard way: a failure, a user correction or rediscovery.

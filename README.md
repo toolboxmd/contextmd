@@ -185,6 +185,36 @@ else `$AGENT_OBSERVER_DB`, else Observer's default
 schema 3 (Observer 1.0.1); with any other schema every serve is
 `observer_failed`.
 
+### Serve card
+
+`bin/contextmd-serve card --base ~/.t3 --candidate ID [--json]` shows one
+served entry the way the outcome judge reads it:
+
+- the rule as it was served, with its source: the entry file, the entry at the
+  served version from its store's Git history, the deny text, or the reply
+  that carried it;
+- how it was delivered;
+- the events from the served call up to the next prompt or interrupt a
+  person sent into the session, or at most 60 events. A parent agent's
+  message into a child session does not end the window yet
+  (toolboxmd/agent-observer#73).
+
+The first lines say what happened and why it matters, then give the facts.
+The judge labels the card with
+[`prompts/serve/label.md`](prompts/serve/label.md), using only the card's
+`allowed_labels`. `ignored` is allowed only on a serve proven shown
+(`shown = yes`), and a breach on any other serve stays unlabeled. A card the judge must not
+label names its gap under `no_evidence`:
+
+- the report's evidence gap;
+- `window_cap`, when the window hit 60 events;
+- `window_open`, when the session went on past what Observer has imported;
+- `rule_text`, when the served text cannot be recovered.
+
+The card reads Observer's ledger read-only, like the report, and gets tool
+input and results from `agent-observer event show`, which is a read-only
+command. Cards hold transcript text, so keep them on the machine.
+
 Run the tests with `python3 -m unittest discover -s tests -t .`. The contract
 suite in `tests/test_contract.py` runs the real hook against a Chromeria dev
 server when `CONTEXTMD_CHROMERIA` names a Chromeria checkout.
