@@ -63,7 +63,8 @@ def _apply(cfg, store: Store, name: str, entry_file: Path, store_dir: Path, now:
     if sha:
         state = "already_applied"
         if not _pushed(repo, sha):
-            _push(repo)
+            _require_unpushed(repo, [sha])
+            _push(repo, sha)
             state = "pushed"
         entry = store_dir / _git(repo, "show", "--name-only", "--format=", sha).split("/")[-1]
         _finish(store, applied_dir, inbox_path, item, sha, entry)
@@ -83,25 +84,25 @@ def _apply(cfg, store: Store, name: str, entry_file: Path, store_dir: Path, now:
     if target.exists() or any(e["id"] == entry_id for e in before["entries"]):
         raise Refused(f"id {entry_id!r} already used in {store_dir}")
     _check_keys(cfg, item, fields, now)
-
-    target.write_text(raw, encoding="utf-8")
-    after = _serve_check(cfg, store_dir)
-    if after["errors"]:
-        target.unlink()
-        raise Refused(f"entry fails contextmd-serve check: {after['errors']}")
+    _require_unpushed(repo, [])
 
     rel = target.name
     message = (f"capture: add entry {entry_id}\n\n"
                f"Capture-Key: {name}\nCapture-Pass: {item['pass']['pass_id']}\n")
+    target.write_text(raw, encoding="utf-8")
     try:
+        after = _serve_check(cfg, store_dir)
+        if after["errors"]:
+            raise Refused(f"entry fails contextmd-serve check: {after['errors']}")
         _git(repo, "add", "--", rel)
         _git(repo, "commit", "-q", "-m", message, "--", rel)
-    except CaptureError:
+    except BaseException:
+        # Nothing is committed yet: remove only the file this run wrote, so a retry starts clean.
         subprocess.run(["git", "-C", str(repo), "reset", "-q", "--", rel], capture_output=True)
-        target.unlink()
+        target.unlink(missing_ok=True)
         raise
     sha = _git(repo, "rev-parse", "HEAD")
-    _push(repo)
+    _push(repo, sha)
     _finish(store, applied_dir, inbox_path, item, sha, target)
     return {"state": "applied", "sha": sha, "entry": str(target)}
 
@@ -205,8 +206,21 @@ def _pushed(repo: Path, sha: str) -> bool:
     return proc.returncode == 0
 
 
-def _push(repo: Path) -> None:
-    proc = subprocess.run(["git", "-C", str(repo), "push", "-q"], capture_output=True, text=True)
+def _require_unpushed(repo: Path, allowed: list[str]) -> None:
+    """Refuse unless the commits not on the upstream are exactly ``allowed``: apply publishes nothing else."""
+    extra = _git(repo, "rev-list", "@{upstream}..HEAD").split()
+    if extra != allowed:
+        raise Refused(f"the store's branch has {len(extra)} commit(s) not on its upstream"
+                      f"{' besides the receipt' if allowed else ''}; push or remove them first")
+
+
+def _push(repo: Path, sha: str) -> None:
+    """Push exactly ``sha`` to the branch's upstream branch."""
+    branch = _git(repo, "symbolic-ref", "--short", "HEAD")
+    remote = _git(repo, "config", f"branch.{branch}.remote")
+    merge = _git(repo, "config", f"branch.{branch}.merge")
+    proc = subprocess.run(["git", "-C", str(repo), "push", "-q", remote, f"{sha}:{merge}"],
+                          capture_output=True, text=True)
     if proc.returncode != 0:
         raise CaptureError(f"push failed; the commit is kept and a re-run pushes it: {proc.stderr.strip()[-500:]}")
 

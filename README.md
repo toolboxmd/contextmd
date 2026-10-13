@@ -84,14 +84,16 @@ A model job shapes one kept item into an exact-key entry with
 add-only:
 
 - It refuses a store or entry that fails `contextmd-serve check`, a duplicate
-  id, a body over 1,800 bytes, an absolute target, and a command key that is
-  neither in the source session's tool input nor in at least 2 sessions of
-  the last 14 days in Agent Observer.
+  id, a body over 1,800 bytes, an absolute target, path and error keys, a
+  command key that is neither in the source session's tool input nor in at
+  least 2 sessions of the last 14 days in Agent Observer, and a store branch
+  with commits not on its upstream.
 - It writes `<id>.md` as one commit with `Capture-Key` and `Capture-Pass`
-  trailers, pushes it, and moves the item from `inbox/` to `applied/` with
+  trailers, pushes only that commit, and moves the item from `inbox/` to `applied/` with
   the commit sha. Undo an entry with `git revert`.
 - A re-run whose `Capture-Key` is already committed adds nothing; if that
-  commit was never pushed, the re-run pushes it.
+  commit was never pushed and is the only commit not on the upstream, the
+  re-run pushes it. A failure before the commit removes the file it wrote.
 
 ### State and configuration
 

@@ -177,6 +177,60 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(self.run_apply()["state"], "already_applied")
         self.assertEqual(self.remote_log()[0], sha)
 
+    # Publication is limited to the receipt commit.
+    def unrelated_local_commit(self):
+        (self.repo / "AGENTS.md").write_text("persona draft\n")
+        git(self.repo, "add", "AGENTS.md")
+        git(self.repo, "commit", "-q", "-m", "persona: unpublished")
+        return git(self.repo, "rev-parse", "HEAD")
+
+    def test_unpushed_unrelated_commit_is_refused_and_stays_unpublished(self):
+        before = self.remote_log()
+        local = self.unrelated_local_commit()
+        with self.assertRaises(apply.Refused) as cm:
+            self.run_apply()
+        self.assertIn("not on its upstream", str(cm.exception))
+        self.assertEqual(self.remote_log(), before)
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), local)
+        self.assertFalse((self.store_dir / "chromeria-db-read-only.md").exists())
+        self.assertTrue(self.inbox_item.exists())
+
+    def test_resume_refuses_to_push_a_commit_made_after_the_receipt(self):
+        before = self.remote_log()
+        git(self.repo, "remote", "set-url", "origin", str(self.tmp / "missing.git"))
+        with self.assertRaises(CaptureError):
+            self.run_apply()
+        git(self.repo, "remote", "set-url", "origin", str(self.remote))
+        self.unrelated_local_commit()
+        with self.assertRaises(apply.Refused) as cm:
+            self.run_apply()
+        self.assertIn("not on its upstream", str(cm.exception))
+        self.assertEqual(self.remote_log(), before)
+        self.assertTrue(self.inbox_item.exists())
+
+    # A failed check after the write removes only this run's file, so a retry works.
+    def test_check_failing_without_a_report_after_the_write_allows_a_retry(self):
+        calls = self.tmp / "calls"
+        wrapper = self.tmp / "serve-wrapper"
+        wrapper.write_text(f"""#!/bin/sh
+n=$(cat {calls} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {calls}
+[ "$n" -eq 2 ] && {{ echo boom >&2; exit 1; }}
+exec {SERVE_BIN} "$@"
+""")
+        wrapper.chmod(0o755)
+        (self.store_dir / "user-note.txt").write_text("not mine\n")
+        self.cfg["serve_bin"] = str(wrapper)
+        before = self.remote_log()
+        with self.assertRaises(CaptureError) as cm:
+            self.run_apply()
+        self.assertIn("without a report", str(cm.exception))
+        self.assertFalse((self.store_dir / "chromeria-db-read-only.md").exists())
+        self.assertTrue((self.store_dir / "user-note.txt").exists())
+        self.assertEqual(self.remote_log(), before)
+        self.assertTrue(self.inbox_item.exists())
+        (self.store_dir / "user-note.txt").unlink()
+        self.assertEqual(self.run_apply()["state"], "applied")
+
     # 5. A crash between commit and push resumes with the push.
     def test_failed_push_resumes_with_the_push_and_no_second_commit(self):
         before = self.remote_log()

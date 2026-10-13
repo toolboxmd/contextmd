@@ -22,11 +22,11 @@ must-know-before: true
 ## Field rules
 
 - **`id`:** lowercase words joined by `-`, at most 120 characters, naming the rule, not the session.
-- **Keys:** at least one `command:`, `path:` or `error:` line; each may repeat, and any one match serves the entry.
+- **Keys:** one or more `command:` lines; any one match serves the entry. Do not write `path:` or `error:` keys: the writer cannot yet check them against tool input and refuses them. If only a path or an error marks the moment, write `NO ENTRY` (below).
   - Copy keys from the source session's tool input. Do not invent a form an agent might type.
   - A command key is whole words, contiguous, as agents type them: `git -C x commit` does not match `git commit`, and a URL is one word. Words break at whitespace, quotes, backslashes and shell punctuation, so `"file:x.db?mode=ro"` is one word.
   - A command key's first word also matches the last part of a path: the key `chromeria-v2.sqlite` matches `~/.t3/userdata/chromeria-v2.sqlite`.
-  - A path that agents reach only through shell commands needs a `command:` key, not a `path:` key: path keys match only file tools.
+  - A path that agents reach through shell commands is a `command:` key (its file name, or the whole path as typed).
   - Prefer the fewest keys that cover the trigger. A key that matches unrelated work denies that work.
 - **`must-know-before: true`** only when acting once without the rule causes a side effect or a silent wrong result. Otherwise leave the line out: the entry is then served after the tool result.
 - **`target`:** only for a pointer rule whose full text lives in another file. Home-relative (`~/...`) or relative to the entry file, never an absolute `/Users/...` path. Leave it out for an inline rule.
