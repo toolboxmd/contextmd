@@ -138,7 +138,8 @@ Codex instance, with trust hashes recorded where that instance's Codex reads
 them), keeps other hooks, file permissions and symlinks, and backs up each
 changed file as `<file>.contextmd-backup`. The hook finds the server through
 Chromeria's `<base>/userdata/server-runtime.json`. With the server down, the
-hook gives up within a second and the call runs unserved.
+hook gives up at once; a slow or unreachable server is cut off after 2 seconds
+(4 for Grok), and the call runs unserved.
 
 ### Off switch and log
 
