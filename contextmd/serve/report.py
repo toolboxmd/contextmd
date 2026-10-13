@@ -92,13 +92,13 @@ def evidence(observer: Observer, harness: str, session: str, tool_use_id: str | 
     return "no_native_record", None
 
 
-def rows(db_path: Path, observer: Observer, since: float | None = None):
-    """(rows, canary serves left out), oldest first."""
+def rows(db_path: Path, observer: Observer, since: float | None = None, candidate: int | None = None):
+    """(rows, canary serves left out), oldest first; only ``candidate`` when given."""
     db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
     try:
         served = db.execute(
-            f"""SELECT c.id AS candidate_id, c.entry, c.version, c.seam, c.outcome,
+            f"""SELECT c.id AS candidate_id, c.entry, c.version, c.key, c.seam, c.outcome, m.owners_json,
                       m.id AS moment_id, m.received_at, m.harness, m.kind, m.session, m.epoch, m.tool_use_id,
                       (SELECT checked FROM claims cl WHERE cl.candidate_id = c.id
                         ORDER BY cl.checked IS NULL LIMIT 1) AS checked,
@@ -114,7 +114,8 @@ def rows(db_path: Path, observer: Observer, since: float | None = None):
                LEFT JOIN deny_state d ON c.seam = 'deny' AND d.harness = m.harness AND d.session = m.session
                     AND d.epoch = m.epoch AND d.entry = c.entry AND d.version = c.version
                WHERE c.outcome IN ({",".join("?" * len(SERVED))}) AND m.received_at >= ?
-               ORDER BY m.received_at, c.id""", (*SERVED, since or 0)).fetchall()
+                 AND (? IS NULL OR c.id = ?)
+               ORDER BY m.received_at, c.id""", (*SERVED, since or 0, candidate, candidate)).fetchall()
     except sqlite3.Error as exc:
         raise LogError(f"cannot read the serving log {db_path}: {exc}") from exc
     finally:
@@ -130,7 +131,8 @@ def rows(db_path: Path, observer: Observer, since: float | None = None):
         out.append({
             "moment_id": r["moment_id"], "candidate_id": r["candidate_id"], "at": r["received_at"],
             "harness": r["harness"], "session": r["session"], "epoch": r["epoch"], "tool_use_id": r["tool_use_id"],
-            "entry": r["entry"], "version": r["version"], "seam": r["seam"], "moment": r["kind"],
+            "entry": r["entry"], "version": r["version"], "key": r["key"], "seam": r["seam"], "moment": r["kind"],
+            "owners": json.loads(r["owners_json"] or "{}"),
             "outcome": r["outcome"],
             "shown": "no" if r["checked"] == "hidden" or r["outcome"] == "hidden"
                      else "yes" if r["checked"] == "shown" else "unproven",

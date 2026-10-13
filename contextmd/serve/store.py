@@ -115,9 +115,9 @@ class CueStore:
     errors: list[str]
 
 
-def _front_matter(path: Path, allowed) -> tuple[bytes, dict[str, list[str]], str]:
+def _front_matter(path: Path, allowed, raw: bytes | None = None) -> tuple[bytes, dict[str, list[str]], str]:
     """The file bytes, its front-matter fields and its body; raises on a malformed entry."""
-    raw = path.read_bytes()
+    raw = path.read_bytes() if raw is None else raw
     text = raw.decode("utf-8")
     lines = text.split("\n")
     if not lines or lines[0].strip() != "---":
@@ -156,8 +156,9 @@ def _target(value: str, path: Path) -> str:
     return os.path.realpath(os.path.join(path.parent, os.path.expanduser(value)))
 
 
-def parse(path: Path) -> Entry:
-    raw, fields, body = _front_matter(path, {*OTHER_FIELDS, *KEY_FIELDS})
+def parse(path: Path, raw: bytes | None = None) -> Entry:
+    """The entry in ``path``, or in ``raw`` read from that path at another commit."""
+    raw, fields, body = _front_matter(path, {*OTHER_FIELDS, *KEY_FIELDS}, raw)
     flag = (fields.get("must-know-before") or ["false"])[-1].lower()
     if flag not in ("true", "false"):
         raise ValueError("must-know-before is not true or false")
