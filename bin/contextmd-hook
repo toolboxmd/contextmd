@@ -7,8 +7,9 @@
 # <base-dir>/userdata/contextmd/hook-credential. Fails open: with the off file, no
 # server, no credential, a refused or slow server, the harness call proceeds unserved
 # and the agent sees nothing; an error status (an older server without the route, a 5xx)
-# prints no body either (--fail). The settle call runs only after curl exited 0, which it
-# does only when all of the reply reached stdout.
+# prints no body either (--fail). The settle call runs only after printf wrote all of the
+# reply to stdout. The reply is held in the shell, not written by curl to /dev/fd: hosts
+# that spawn hooks with socket stdio (Node on Linux) cannot reopen it there (#30).
 harness=$1 base=$2
 dir=$base/userdata/contextmd
 [ -e "$dir/off" ] && exit 0
@@ -16,11 +17,14 @@ url=$(sed -n 's/.*"origin" *: *"\([^"]*\)".*/\1/p' "$base/userdata/server-runtim
 token=$(sed -n 's/.*"token" *: *"\([^"]*\)".*/\1/p' "$dir/hook-credential" 2>/dev/null)
 [ -n "$url" ] && [ -n "$token" ] || exit 0
 delivery=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
-exec 4>&1
-code=$(curl -s --fail --connect-timeout 0.1 -m 1 -o /dev/fd/4 -w '%{http_code}' \
+nl='
+'
+reply=$(curl -s --fail --connect-timeout 0.1 -m 1 -w "$nl%{http_code}" \
   -H "authorization: Bearer $token" -H "x-contextmd-harness: $harness" -H "x-contextmd-delivery: $delivery" \
   -H 'content-type: application/json' --data-binary @- "$url/contextmd/v1/moment") || exit 0
-[ "$code" = 200 ] || exit 0
-exec 1>/dev/null 4>&-
+[ "${reply##*$nl}" = 200 ] || exit 0
+trap '' PIPE  # a closed stdout fails printf (no settle) instead of killing the hook
+printf '%s' "${reply%$nl*}" 2>/dev/null || exit 0
+exec 1>/dev/null
 curl -s -m 0.3 -X POST -H "authorization: Bearer $token" "$url/contextmd/v1/settle/$delivery" >/dev/null 2>&1
 exit 0

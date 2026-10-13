@@ -511,6 +511,50 @@ class HookScriptTest(unittest.TestCase):
             self.assertEqual((down.returncode, down.stdout), (0, ""))
             self.assertLess(time.time() - started, 1.5)
 
+    def test_a_socket_stdout_gets_the_reply_and_the_settle(self):
+        # Node spawns hooks with socket stdio; Linux cannot reopen a socket through /dev/fd (#30).
+        import http.server
+        import socket
+        import threading
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("content-length") or 0))
+                seen.append(self.path.rsplit("/", 1)[0])
+                out = b'{"hookSpecificOutput":{"additionalContext":"rule"}}' if self.path.endswith("/moment") else b""
+                self.send_response(200 if out else 204)
+                self.send_header("content-length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        hook = BIN.parent / "contextmd-hook"
+        ours, theirs = socket.socketpair()
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                base = Path(d)
+                (base / "userdata" / "contextmd").mkdir(parents=True)
+                (base / "userdata" / "server-runtime.json").write_text(
+                    json.dumps({"origin": f"http://127.0.0.1:{server.server_port}"}))
+                (base / "userdata" / "contextmd" / "hook-credential").write_text(json.dumps({"token": "tok"}))
+                done = subprocess.run(["/bin/sh", str(hook), "claude", str(base)], input=b"{}",
+                                      stdout=theirs, stderr=subprocess.PIPE, timeout=10)
+                theirs.close()
+                got = b""
+                while chunk := ours.recv(4096):
+                    got += chunk
+                self.assertEqual((done.returncode, got), (0, b'{"hookSpecificOutput":{"additionalContext":"rule"}}'))
+                self.assertEqual(seen, ["/contextmd/v1", "/contextmd/v1/settle"])
+        finally:
+            ours.close()
+            server.shutdown()
+            server.server_close()
+
     def test_an_error_status_prints_nothing(self):
         import http.server
         import threading
