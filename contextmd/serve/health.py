@@ -17,9 +17,10 @@ harness, and ``heartbeats.at``. No model, no transcript text.
 
 Filing: one open Issue per class in the owner's repository, found by its ``ContextMD-Class:`` line
 (or a seeded Issue); an open one gets a comment. Each body or comment carries a
-``ContextMD-Window:`` line, and a window already recorded on the Issue is not posted again, so an
-identical rerun writes nothing. Bodies hold the machine label, harness, kind, counts, rates, the
-UTC window, the heartbeat age and at most ``MAX_IDS`` opaque ids.
+``ContextMD-Window: <machine> <class> <start>-<end>`` line, and an observation already recorded on
+the Issue is not posted again, so an identical rerun writes nothing while another machine's report
+for the same window, or another class seeded to the same Issue, still posts. Bodies hold the machine label, harness, kind, counts, rates, the
+UTC window, the heartbeat age and at most ``MAX_IDS`` opaque ids per body.
 """
 
 from __future__ import annotations
@@ -157,12 +158,21 @@ def section(finding: Finding, result: Result, machine: str) -> str:
         for r in finding.rows:
             rate = f"{r['rate']:.1%}" if "rate" in r else "n/a"
             kinds = ", ".join(f"{k} {n}" for k, n in sorted((r.get("kinds") or {}).items())) or "n/a"
-            lines.append(f"| {r['harness']} | {r['count']} of {r['total']} moments | {rate} | {kinds} |")
-        lines += ["", "Example ids: " + ", ".join(str(i) for r in finding.rows for i in r["ids"][:MAX_IDS])]
+            count = (f"{r['count']} of {r['total']} moments" if finding.cls.startswith("moment/")
+                     else f"{r['count']} candidate rows, of {r['total']} moments")
+            lines.append(f"| {r['harness']} | {count} | {rate} | {kinds} |")
+        ids = [i for r in finding.rows for i in r["ids"]][:MAX_IDS]
+        lines += ["", "Example ids: " + ", ".join(map(str, ids))]
     age = result.heartbeat_age
     lines += ["", f"Heartbeat age at the run: {'none' if age is None else f'{int(age)} s'}",
-              f"ContextMD-Window: {result.start:.0f}-{result.end:.0f}"]
+              window_mark(finding, result, machine)]
     return "\n".join(lines)
+
+
+def window_mark(finding: Finding, result: Result, machine: str) -> str:
+    """One observation: this machine's numbers for this class over this window. The Issue is shared
+    per class (and a seeded Issue may hold several classes), so all three identify it."""
+    return f"ContextMD-Window: {machine} {finding.cls} {result.start:.0f}-{result.end:.0f}"
 
 
 def body(finding: Finding, result: Result, machine: str) -> str:
@@ -209,15 +219,14 @@ class GitHub:
 
     def posted(self, repo: str, number: int, window: str) -> bool:
         issue = json.loads(self.run("issue", "view", str(number), "-R", repo, "--json", "state,body,comments"))
-        return any(window in text for text in [issue["body"], *(c["body"] for c in issue["comments"])])
+        return any(window in text.splitlines() for text in [issue["body"], *(c["body"] for c in issue["comments"])])
 
 
 def file(result: Result, gh: GitHub, machine: str, seed: dict) -> list[str]:
     actions = []
-    window = f"ContextMD-Window: {result.start:.0f}-{result.end:.0f}"
     for finding in result.findings:
         repo, number = gh.target(finding.cls, seed)
-        if number is not None and gh.posted(repo, number, window):
+        if number is not None and gh.posted(repo, number, window_mark(finding, result, machine)):
             actions.append(f"already posted {repo}#{number} {finding.cls}")
         elif gh.dry_run:
             actions.append(f"would {'comment on ' + repo + '#' + str(number) if number else 'file ' + repo}"

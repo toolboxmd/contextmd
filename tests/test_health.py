@@ -200,6 +200,48 @@ class HealthTest(unittest.TestCase):
         self.assertEqual(len(self.filed("toolboxmd/chromeria")), 1)
         self.assertEqual(len(self.issues["toolboxmd/chromeria"][0]["comments"]), 1)
 
+    def test_another_machine_with_the_same_window_still_posts(self):
+        self.moments("claude", "ok", 150)
+        self.moments("claude", "bad_event", 50)
+        window = ("--from", datetime.fromtimestamp(NOW - 86400, timezone.utc).isoformat(),
+                  "--to", datetime.fromtimestamp(NOW, timezone.utc).isoformat())
+        self.configure(machine="machine-a")
+        self.run_health(*window)
+        self.configure(machine="machine-b")
+        text = self.run_health(*window)
+        self.assertNotIn("already posted", text)
+        [issue] = self.filed("toolboxmd/contextmd")
+        self.assertEqual(len(issue["comments"]), 1)
+        self.assertIn("machine-b", issue["comments"][0])
+        self.run_health(*window)  # the same machine again: an identical observation
+        self.assertEqual(len(self.filed("toolboxmd/contextmd")[0]["comments"]), 1)
+
+    def test_classes_seeded_to_one_issue_each_post(self):
+        self.issues = {"toolboxmd/chromeria": [{"number": 228, "state": "OPEN", "comments": [], "body": "x"}]}
+        self.configure(seed={"candidate/hidden": "toolboxmd/chromeria#228",
+                             "candidate/unverified": "toolboxmd/chromeria#228"})
+        self.moments("grok", "ok", 200)
+        self.candidates("grok", "hidden", 11)
+        self.candidates("grok", "unverified", 11)
+        self.run_health()
+        comments = self.issues["toolboxmd/chromeria"][0]["comments"]
+        self.assertEqual(sorted("hidden" in c for c in comments), [False, True])
+        self.assertEqual(len(comments), 2)
+
+    def test_at_most_ten_ids_per_body_and_candidate_counts_say_their_unit(self):
+        for harness in ("claude", "codex"):
+            self.moments(harness, "ok", 150)
+            self.moments(harness, "bad_event", 50)
+        self.candidates("grok", "unverified", 12)
+        self.moments("grok", "ok", 100)
+        self.run_health()
+        for body in (i["body"] for v in self.issues.values() for i in v):
+            ids = next(line for line in body.splitlines() if line.startswith("Example ids:"))
+            self.assertLessEqual(len(ids.split(":", 1)[1].split(",")), 10, body)
+        [cand] = self.filed("toolboxmd/chromeria")
+        self.assertIn("12 candidate rows", cand["body"])
+        self.assertIn("of 112 moments", cand["body"])
+
     def test_bodies_hold_counts_and_ids_only(self):
         self.moments("claude", "ok", 100)
         self.moments("claude", "bad_event", 30, reason="secret-reason")

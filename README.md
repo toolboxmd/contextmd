@@ -205,8 +205,10 @@ repository that owns it. It reads only stored values, read-only:
   `no calls, coverage unknown` while the heartbeat is fresh, and
   `server stale` when it is not.
 
-Each Issue carries a `ContextMD-Class:` line. A later window adds a comment,
-and a window already posted is not posted again. Bodies hold counts, rates,
+Each Issue carries a `ContextMD-Class:` line. A later window adds a comment.
+Each post is identified by machine, class and window, so the same
+observation is never posted twice, while another machine's report for the
+same window still is. Bodies hold counts, rates,
 the window and at most 10 ids; no reasons, keys, paths or session text.
 Configuration lives in `~/.config/contextmd/health.json` (`machine`,
 `expected_harnesses`, `seed` mapping a class to an existing Issue), and the
