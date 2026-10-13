@@ -21,7 +21,11 @@ token=$(sed -n 's/.*"token" *: *"\([^"]*\)".*/\1/p' "$dir/hook-credential" 2>/de
 delivery=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
 nl='
 '
-reply=$(curl -s --fail --connect-timeout 0.1 -m 1 -w "$nl%{http_code}" \
+# Grok takes served text only at PreToolUse and allows its hooks 5 s, so it waits longer;
+# elsewhere a slow moment must not hold the agent (chromeria#230).
+deadline=1
+[ "$harness" = grok ] && deadline=4
+reply=$(curl -s --fail --connect-timeout 0.1 -m "$deadline" -w "$nl%{http_code}" \
   -H "authorization: Bearer $token" -H "x-contextmd-harness: $harness" -H "x-contextmd-delivery: $delivery" \
   -H 'content-type: application/json' --data-binary @- "$url/contextmd/v1/moment") || exit 0
 [ "${reply##*$nl}" = 200 ] || exit 0
