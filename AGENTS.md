@@ -15,3 +15,7 @@ Chromeria's `GLOSSARY.md` is the system glossary; this repository's
 | Agent Observer | `toolboxmd/agent-observer` | [`GLOSSARY.md`](https://github.com/toolboxmd/agent-observer/blob/main/GLOSSARY.md) |
 
 Model Router (`toolboxmd/model-router`) is retired; Chromeria's Prism absorbed it.
+
+## Feature map
+
+When a pull request adds, splits, merges or removes a part of ContextMD, or binds a new Issue to one, update [`docs/map.md`](docs/map.md) in that same pull request.
