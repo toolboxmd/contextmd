@@ -231,6 +231,72 @@ exec {SERVE_BIN} "$@"
         (self.store_dir / "user-note.txt").unlink()
         self.assertEqual(self.run_apply()["state"], "applied")
 
+    # The store's working tree belongs to the user: apply refuses any change it did not make.
+    def committed_entry(self, text=ENTRY, name="chromeria-db-read-only.md"):
+        (self.store_dir / name).write_text(text.replace("Open", "Always open"))
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-q", "-m", "user entry")
+        git(self.repo, "push", "-q")
+
+    def test_staged_deletion_of_the_destination_is_refused_and_kept(self):
+        self.committed_entry()
+        git(self.repo, "rm", "-q", "library/chromeria-db-read-only.md")
+        before = self.remote_log()
+        with self.assertRaises(apply.Refused) as cm:
+            self.run_apply()
+        self.assertIn("uncommitted changes", str(cm.exception))
+        self.assertEqual(git(self.repo, "diff", "--cached", "--name-status"), "D\tlibrary/chromeria-db-read-only.md")
+        self.assertFalse((self.store_dir / "chromeria-db-read-only.md").exists())
+        self.assertEqual(self.remote_log(), before)
+        self.assertTrue(self.inbox_item.exists())
+
+    def test_staged_deletion_survives_a_failing_check(self):
+        self.committed_entry()
+        git(self.repo, "rm", "-q", "library/chromeria-db-read-only.md")
+        wrapper = self.tmp / "serve-fails"
+        wrapper.write_text("#!/bin/sh\necho boom >&2\nexit 1\n")
+        wrapper.chmod(0o755)
+        self.cfg["serve_bin"] = str(wrapper)
+        with self.assertRaises(CaptureError):
+            self.run_apply()
+        self.assertEqual(git(self.repo, "diff", "--cached", "--name-status"), "D\tlibrary/chromeria-db-read-only.md")
+
+    def test_unstaged_deletion_of_a_tracked_destination_is_refused(self):
+        self.committed_entry()
+        (self.store_dir / "chromeria-db-read-only.md").unlink()
+        with self.assertRaises(apply.Refused) as cm:
+            self.run_apply()
+        self.assertIn("uncommitted changes", str(cm.exception))
+        self.assertEqual(git(self.repo, "diff", "--name-status"), "D\tlibrary/chromeria-db-read-only.md")
+        self.assertEqual(git(self.repo, "diff", "--cached", "--name-status"), "")
+
+    def test_unrelated_unstaged_change_in_the_store_is_refused(self):
+        (self.store_dir / "README.md").write_text("# Great Library, edited\n")
+        with self.assertRaises(apply.Refused) as cm:
+            self.run_apply()
+        self.assertIn("uncommitted changes", str(cm.exception))
+        self.assertEqual(git(self.repo, "diff", "--name-status"), "M\tlibrary/README.md")
+        self.assertEqual(git(self.repo, "diff", "--cached", "--name-status"), "")
+        self.assertFalse((self.store_dir / "chromeria-db-read-only.md").exists())
+
+    def test_destination_committed_under_another_id_is_refused(self):
+        self.committed_entry(ENTRY.replace("id: chromeria-db-read-only", "id: other-id"))
+        with self.assertRaises(apply.Refused) as cm:
+            self.run_apply()
+        self.assertIn("already", str(cm.exception))
+
+    # The serving check's report is read in its current shape, and anything else fails closed.
+    def test_unrecognized_check_report_fails_closed(self):
+        wrapper = self.tmp / "serve-old"
+        wrapper.write_text("#!/bin/sh\necho '{\"entries\": [], \"errors\": []}'\n")
+        wrapper.chmod(0o755)
+        self.cfg["serve_bin"] = str(wrapper)
+        with self.assertRaises(CaptureError) as cm:
+            self.run_apply()
+        self.assertIn("exact_keys", str(cm.exception))
+        self.assertFalse((self.store_dir / "chromeria-db-read-only.md").exists())
+        self.assertTrue(self.inbox_item.exists())
+
     # 5. A crash between commit and push resumes with the push.
     def test_failed_push_resumes_with_the_push_and_no_second_commit(self):
         before = self.remote_log()

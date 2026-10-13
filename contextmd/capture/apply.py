@@ -85,6 +85,7 @@ def _apply(cfg, store: Store, name: str, entry_file: Path, store_dir: Path, now:
         raise Refused(f"id {entry_id!r} already used in {store_dir}")
     _check_keys(cfg, item, fields, now)
     _require_unpushed(repo, [])
+    _require_clean(repo)
 
     rel = target.name
     message = (f"capture: add entry {entry_id}\n\n"
@@ -169,7 +170,7 @@ def _check_keys(cfg: dict, item: dict, fields: dict, now: float) -> None:
 
 
 def _serve_check(cfg: dict, store_dir: Path) -> dict:
-    """``contextmd-serve check`` on this one store directory."""
+    """``contextmd-serve check`` on this one store directory: its ``exact_keys`` report."""
     serve_bin = os.path.expanduser(cfg.get("serve_bin") or "")
     if not serve_bin or not Path(serve_bin).exists():
         raise CaptureError(f"contextmd-serve not found at {serve_bin!r}; set serve_bin in the capture config")
@@ -183,9 +184,14 @@ def _serve_check(cfg: dict, store_dir: Path) -> dict:
     except ValueError:
         raise CaptureError(f"contextmd-serve check exited {proc.returncode} without a report: "
                            f"{proc.stderr.strip()[-500:]}") from None
-    if proc.returncode != 0 and not out.get("errors"):
-        out["errors"] = [f"exit {proc.returncode}"]
-    return out
+    report = out.get("exact_keys") if isinstance(out, dict) else None
+    if not (isinstance(report, dict) and isinstance(report.get("entries"), list)
+            and isinstance(report.get("errors"), list)):
+        raise CaptureError("contextmd-serve check printed no exact_keys report with entries and errors;"
+                           " use contextmd 5221283 or later")
+    if proc.returncode != 0 and not report["errors"]:
+        report["errors"] = [f"exit {proc.returncode}"]
+    return report
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -204,6 +210,13 @@ def _pushed(repo: Path, sha: str) -> bool:
     upstream = _git(repo, "rev-parse", "--verify", "@{upstream}")
     proc = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, upstream])
     return proc.returncode == 0
+
+
+def _require_clean(repo: Path) -> None:
+    """Refuse a store with staged or unstaged changes: they are the user's, and apply never touches them."""
+    dirty = _git(repo, "status", "--porcelain", "--untracked-files=no", "--", ".")
+    if dirty:
+        raise Refused(f"the store has uncommitted changes apply did not make: {dirty.splitlines()[:5]}")
 
 
 def _require_unpushed(repo: Path, allowed: list[str]) -> None:

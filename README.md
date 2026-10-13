@@ -86,8 +86,10 @@ add-only:
 - It refuses a store or entry that fails `contextmd-serve check`, a duplicate
   id, a body over 1,800 bytes, an absolute target, path and error keys, a
   command key that is neither in the source session's tool input nor in at
-  least 2 sessions of the last 14 days in Agent Observer, and a store branch
-  with commits not on its upstream.
+  least 2 sessions of the last 14 days in Agent Observer, a store with
+  staged or unstaged changes, and a store branch with commits not on its
+  upstream. The check is `contextmd-serve check` from contextmd `5221283` or
+  later (its `exact_keys` report).
 - It writes `<id>.md` as one commit with `Capture-Key` and `Capture-Pass`
   trailers, pushes only that commit, and moves the item from `inbox/` to `applied/` with
   the commit sha. Undo an entry with `git revert`.
