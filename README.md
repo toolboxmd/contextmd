@@ -76,9 +76,26 @@ captured again never replaces another pass's inbox items. A segment whose
 lesson has no Agent Observer event to anchor to stays uncommitted, with the
 reason in `pass.json`.
 
+### Writing an entry
+
+A model job shapes one kept item into an exact-key entry with
+`prompts/capture/shape-entry.md`. Then
+`bin/contextmd capture apply <item> --entry <file> --store <dir>` writes it,
+add-only:
+
+- It refuses a store or entry that fails `contextmd-serve check`, a duplicate
+  id, a body over 1,800 bytes, an absolute target, and a command key that is
+  neither in the source session's tool input nor in at least 2 sessions of
+  the last 14 days in Agent Observer.
+- It writes `<id>.md` as one commit with `Capture-Key` and `Capture-Pass`
+  trailers, pushes it, and moves the item from `inbox/` to `applied/` with
+  the commit sha. Undo an entry with `git revert`.
+- A re-run whose `Capture-Key` is already committed adds nothing; if that
+  commit was never pushed, the re-run pushes it.
+
 ### State and configuration
 
-State lives in `~/.local/state/contextmd/capture/` (`inbox/`, `cursors.json`,
+State lives in `~/.local/state/contextmd/capture/` (`inbox/`, `applied/`, `cursors.json`,
 `passes/`). State written before passes and the inbox were named that way
 (`runs/`, `queue/`) is moved in place the first time a command runs. Models
 and paths can be overridden in `~/.config/contextmd/capture.json`; see

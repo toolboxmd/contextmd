@@ -1,4 +1,4 @@
-"""contextmd capture: prepare, next, record, commit, abandon, report, cites and the experiment commands. Stdlib only; prints JSON."""
+"""contextmd capture: prepare, next, record, commit, abandon, report, cites, apply and the experiment commands. Stdlib only; prints JSON."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-from .capture import cites, compare, config, dedupe, observer, report
+from .capture import apply, cites, compare, config, dedupe, observer, report
 from .capture.passes import Capture, CaptureError
 from .capture.store import Busy, write_json
 
@@ -61,6 +61,10 @@ def main(argv=None) -> int:
                      help="copy the source pass's extractor outputs; only the judge runs again")
     ct = cs.add_parser("cites", help="check the cites in a context packets file in place")
     ct.add_argument("packets", help="JSON object of packets keyed by item number")
+    ap_ = cs.add_parser("apply", help="write one shaped entry for a kept inbox item: one commit, pushed")
+    ap_.add_argument("item", help="inbox item name (its key hash)")
+    ap_.add_argument("--entry", required=True, help="the shaped entry file")
+    ap_.add_argument("--store", required=True, help="exact-key store directory, inside a git checkout")
     ns = ap.parse_args(argv)
     cfg = config.load(ns.config)
     if ns.cmd == "cites":
@@ -71,6 +75,14 @@ def main(argv=None) -> int:
         finally:
             con.close()
         write_json(Path(ns.packets), packets)
+        print(json.dumps(out, indent=1))
+        return 0
+    if ns.cmd == "apply":
+        try:
+            out = apply.apply(cfg, ns.item, Path(ns.entry), Path(ns.store))
+        except (CaptureError, Busy) as exc:
+            print(f"capture apply: {exc}", file=sys.stderr)
+            return 1
         print(json.dumps(out, indent=1))
         return 0
     cap_ = Capture(cfg)

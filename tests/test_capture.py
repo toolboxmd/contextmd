@@ -460,8 +460,8 @@ class PassTest(unittest.TestCase):
         self.assertNotIn(self.W, moved(self.cap.store.cursors()))
         self.assertTrue(all(i["moment"]["observer"] for i in self.cap.store.inbox_items()))
         self.assertIn(wseg, result["errors"])
-        self.ao.execute("INSERT INTO events VALUES(?,?,?,?,?)", (22, "codex:w", epoch("2026-10-10T10:06:00Z"),
-                                                                   "tool_call", "y"))
+        self.ao.execute("INSERT INTO events (id, session_key, ts, family, native_id) VALUES(?,?,?,?,?)",
+                        (22, "codex:w", epoch("2026-10-10T10:06:00Z"), "tool_call", "y"))
         self.assertEqual(self.cap.commit()["state"], "complete")
 
     def test_both_extractors_empty_commits_zero_items_without_a_judge(self):

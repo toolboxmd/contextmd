@@ -18,6 +18,8 @@ DEFAULTS = {
     "chromeria_db": "~/.t3/userdata/chromeria-v2.sqlite",
     "observer_bin": "agent-observer",
     "observer_db": "~/.local/state/agent-observer/observer.db",
+    # The serving check every entry must pass before capture apply commits it.
+    "serve_bin": str(Path(__file__).resolve().parents[2] / "bin" / "contextmd-serve"),
     "extractors": {
         "sol": {"providerInstanceId": "codex", "model": "gpt-6.1-sol",
                 "options": [{"id": "reasoningEffort", "value": "high"}]},
@@ -52,5 +54,6 @@ def load(path: str | None = None) -> dict:
     cfg["machine"] = cfg["machine"] or socket.gethostname().split(".")[0].lower()
     for k in ("state_dir", "chromeria_db", "observer_db"):
         cfg[k] = os.path.expanduser(cfg[k])
-    cfg["observer_bin"] = os.path.expanduser(cfg["observer_bin"])
+    for k in ("observer_bin", "serve_bin"):
+        cfg[k] = os.path.expanduser(cfg[k])
     return cfg
