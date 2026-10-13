@@ -14,8 +14,15 @@ does not show.
 
 ## Before labeling
 
-If `no_evidence` is set, do not label. Return `"label": null` with the
-`no_evidence` value as the reason.
+Use only a label in the card's `allowed_labels`. The card decides this, not
+you:
+
+- If `no_evidence` is set, `allowed_labels` is empty. Return `"label": null`
+  with the `no_evidence` value as the reason.
+- `ignored` is allowed only when `shown` is `"yes"`, meaning the serve is
+  proven to have reached the model. When the governed action breaks a rule on
+  any other card, return `"label": null` and say in the reason that the breach
+  is on a serve not proven shown. Do not use another label in its place.
 
 ## Labels
 
@@ -63,7 +70,7 @@ Return one JSON object and nothing else:
 ```
 
 - `"candidate"`: the card's candidate id.
-- `"label"`: one of the five labels, or `null` when `no_evidence` is set.
+- `"label"`: one of the card's `allowed_labels`, or `null` as described above.
 - `"governed_action"`: the event id of the governed action, or `null`.
 - `"events"`: the event ids the label rests on, in card order.
 - `"reason"`: one plain sentence. Do not quote tool arguments, results or

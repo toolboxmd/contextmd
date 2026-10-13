@@ -32,6 +32,29 @@ class CardError(Exception):
     """The candidate cannot be carded."""
 
 
+class LabelError(ValueError):
+    """A judge's label the card does not allow."""
+
+
+def allowed_labels(card: dict) -> list[str]:
+    """The labels a judge may give this card: none without evidence, and ``ignored`` only when
+    the serve is proven shown, because a breach of a rule the model may never have seen is not
+    an ignored rule (design v2; the report's ``shown``)."""
+    if card.get("no_evidence"):
+        return []
+    return [label for label in LABELS if label != "ignored" or card.get("shown") == "yes"]
+
+
+def check_label(card: dict, verdict: dict) -> None:
+    """Raise ``LabelError`` unless the verdict is for this card and uses an allowed label or none."""
+    if verdict.get("candidate") != card["candidate"]:
+        raise LabelError(f"verdict is for candidate {verdict.get('candidate')}, not {card['candidate']}")
+    label = verdict.get("label")
+    if label is not None and label not in allowed_labels(card):
+        raise LabelError(f"label {label!r} is not allowed on card {card['candidate']}"
+                         f" (shown {card.get('shown')}, no_evidence {card.get('no_evidence')})")
+
+
 def _event_details(command: str, ledger: Path, ids: list[int]) -> dict:
     """Tool input and result for these events, through ``agent-observer event show``.
 
@@ -202,10 +225,12 @@ def build(db_path: Path, observer: report.Observer, candidate: int, command: str
             no_evidence = "window_open"  # Observer has not imported the rest of the session yet
     if rule["source"] == "unavailable":
         no_evidence = no_evidence or "rule_text"
-    return {"candidate": candidate, "entry": row["entry"], "version": row["version"], "key": row["key"],
+    built = {"candidate": candidate, "entry": row["entry"], "version": row["version"], "key": row["key"],
             "harness": row["harness"], "seam": row["seam"], "moment": row["moment"], "shown": row["shown"],
             "lift": row["lift"], "late": row["late"], "evidence": row["evidence"], "rule": rule,
             "window": {"end": end, "events": len(events)}, "events": events, "no_evidence": no_evidence}
+    built["allowed_labels"] = allowed_labels(built)
+    return built
 
 
 def _session_went_on(db_path: Path, row: dict, observer: report.Observer) -> bool:

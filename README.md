@@ -201,7 +201,9 @@ served entry the way the outcome judge reads it:
 
 The first lines say what happened and why it matters, then give the facts.
 The judge labels the card with
-[`prompts/serve/label.md`](prompts/serve/label.md). A card the judge must not
+[`prompts/serve/label.md`](prompts/serve/label.md), using only the card's
+`allowed_labels`. `ignored` is allowed only on a serve proven shown
+(`shown = yes`), and a breach on any other serve stays unlabeled. A card the judge must not
 label names its gap under `no_evidence`:
 
 - the report's evidence gap;

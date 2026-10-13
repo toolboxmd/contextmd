@@ -222,6 +222,39 @@ class CardTest(unittest.TestCase):
         self.assertIn("9999", out.stdout + out.stderr)
         self.assertNotIn("Traceback", out.stderr)
 
+    def test_ignored_is_allowed_only_on_a_serve_proven_shown(self):
+        from contextmd.serve import card
+        n = self.window_case()  # a context serve: nothing proves the model saw it
+        unproven = json.loads(self.card(n, "--json").stdout)
+        self.assertEqual(unproven["shown"], "unproven")
+        self.assertNotIn("ignored", unproven["allowed_labels"])
+        self.assertIn("followed", unproven["allowed_labels"])
+        breach = {"candidate": n, "label": "ignored", "governed_action": 503, "events": [503], "reason": "x"}
+        with self.assertRaises(card.LabelError):
+            card.check_label(unproven, breach)
+        card.check_label(unproven, {**breach, "label": None})  # a breach nobody proved was seen: unlabeled
+        self.assertIn("ignored", card.allowed_labels({**unproven, "shown": "yes"}))
+        self.assertNotIn("ignored", card.allowed_labels({**unproven, "shown": "no"}))
+
+    def test_a_shown_deny_allows_ignored(self):
+        from contextmd.serve import card
+        n, tool = self.served(seam="deny", kind="pre_tool", checked="shown", lift="read")
+        self.event(500, "tool_call", 1000.0, native_id=tool, input={"command": "gh issue create"})
+        shown = json.loads(self.card(n, "--json").stdout)
+        self.assertEqual(shown["shown"], "yes")
+        self.assertIn("ignored", shown["allowed_labels"])
+        card.check_label(shown, {"candidate": n, "label": "ignored", "governed_action": 500, "events": [500],
+                                 "reason": "x"})
+
+    def test_a_card_with_no_evidence_allows_no_label(self):
+        from contextmd.serve import card
+        n, _ = self.served()
+        unanchored = json.loads(self.card(n, "--json").stdout)
+        self.assertEqual(unanchored["allowed_labels"], [])
+        with self.assertRaises(card.LabelError):
+            card.check_label(unanchored, {"candidate": n, "label": "followed", "governed_action": None,
+                                          "events": [], "reason": "x"})
+
     def test_the_label_prompt_names_every_label_and_the_output(self):
         from contextmd.serve import card
         prompt = PROMPT.read_text()
@@ -229,6 +262,7 @@ class CardTest(unittest.TestCase):
             self.assertIn(f"`{label}`", prompt)
         for key in ("candidate", "label", "governed_action", "events", "reason"):
             self.assertIn(f'"{key}"', prompt)
+        self.assertIn("`allowed_labels`", prompt)  # the card, not the judge, decides when `ignored` may be used
 
 
 if __name__ == "__main__":
