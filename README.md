@@ -233,11 +233,12 @@ The first lines say what happened and why it matters, then give the facts.
 The judge labels the card with
 [`prompts/serve/label.md`](prompts/serve/label.md), using only the card's
 `allowed_labels`. `ignored` is allowed only on a serve proven shown
-(`shown = yes`), and a breach on any other serve stays unlabeled. A card the judge must not
-label names its gap under `no_evidence`:
+(`shown = yes`), and a breach on any other serve stays unlabeled. A window cut
+at 60 events still allows every label its events can prove, except
+`no_governed_action`, since the governed action may come after the cut. A card
+the judge must not label names its gap under `no_evidence`:
 
 - the report's evidence gap;
-- `window_cap`, when the window hit 60 events;
 - `window_open`, when the session went on past what Observer has imported;
 - `rule_text`, when the served text cannot be recovered.
 

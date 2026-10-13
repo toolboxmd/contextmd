@@ -23,6 +23,10 @@ you:
   proven to have reached the model. When the governed action breaks a rule on
   any other card, return `"label": null` and say in the reason that the breach
   is on a serve not proven shown. Do not use another label in its place.
+- When `window.end` is `"cap"`, the window was cut at its event limit and the
+  governed action may come after the cut, so `no_governed_action` is not
+  allowed. Give any other allowed label the events prove. If the events show
+  no governed action, return `"label": null` and say the window was cut.
 
 ## Labels
 

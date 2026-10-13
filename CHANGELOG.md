@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.3] - 2026-10-13
+
+### Changed
+
+- Serve card: a window cut at the event cap allows every label its events prove except no_governed_action (#15)
+
 ## [0.5.2] - 2026-10-13
 
 ### Changed
