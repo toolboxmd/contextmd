@@ -162,7 +162,7 @@ model. It covers every serve the hook settled (`injected`, `truncated`,
 (`hidden`). Per serve it records:
 
 - `shown`: `yes` when Chromeria saw the deny text in what the model was shown,
-  `no` when another hook's deny reason replaced it, `unproven` otherwise
+  `no` when the deny text the model was shown lacked it, `unproven` otherwise
   (context serves, denies on Codex and OpenCode, and denies whose check never
   arrived);
 - `lift`: how a deny's rule lifted (`read`, `delivered_inline`,

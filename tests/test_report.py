@@ -62,9 +62,10 @@ class Log:
         return n
 
     def serve(self, *, entry="agentsmd-version-control", seam="deny", kind="pre_tool", harness="claude",
-              session="s1", at=1000.0, outcome="injected", checked=None, lift=None, epoch=1, carried_from=None):
+              session="s1", at=1000.0, outcome="injected", checked=None, lift=None, epoch=1, carried_from=None, delivery=None):
         n = self.moment(kind=kind, harness=harness, session=session, at=at, epoch=epoch)
         tool_use_id = f"toolu_{n}"
+        delivery = delivery or f"d{n}"
         self.db.execute("INSERT INTO candidates (id, moment_id, matcher, entry, version, key, seam, stage, outcome,"
                         " reason, served_at) VALUES (?, ?, 'exact_key', ?, 'v1', 'command:git commit', ?, 'settled',"
                         " ?, ?, ?)", (n, n, entry, seam, outcome, "pointer" if seam == "deny" else None, at))
@@ -72,7 +73,7 @@ class Log:
         settled = 0 if checked == "hidden" else 1
         self.db.execute("INSERT INTO claims (delivery, kind, harness, session, epoch, entry, version, whole, settled,"
                         " candidate_id, evidence, tool_use_id, checked) VALUES (?, ?, ?, ?, ?, ?, 'v1', 1, ?, ?, ?, ?, ?)",
-                        (f"d{n}", "deny" if seam == "deny" else "serve", harness, session, epoch, entry, settled, n,
+                        (delivery, "deny" if seam == "deny" else "serve", harness, session, epoch, entry, settled, n,
                          "projection" if checked else "none", tool_use_id, checked))
         if seam == "deny":
             self.db.execute("INSERT OR REPLACE INTO deny_state (harness, session, epoch, entry, version, rule_kind,"
@@ -81,7 +82,7 @@ class Log:
         if carried_from is not None:  # a Grok carry: selected at an earlier moment, printed at this one
             self.db.execute("INSERT INTO carries (harness, session, run_id, entry, version, text, candidate_id, state,"
                             " delivery, created_at) VALUES (?, ?, 'r', ?, 'v1', 't', ?, 'printed', ?, ?)",
-                            (harness, session, entry, carried_from, f"d{n}", at))
+                            (harness, session, entry, carried_from, delivery, at))
         self.db.commit()
         return tool_use_id
 
@@ -166,6 +167,30 @@ class ReportTest(unittest.TestCase):
         on_prompt = self.log.carry(kind="user_message", session="g2")
         self.log.serve(seam="carry_print", harness="grok", session="g2", carried_from=on_prompt, at=1002.0)
         self.assertEqual([r["late"] for r in self.rows()], [False, True, False])
+
+    def test_carries_printed_together_keep_their_own_origin(self):
+        self.log.serve(seam="deny", checked="shown", lift="read", session="a")  # makes the entry must-know
+        on_prompt = self.log.carry(kind="user_message", session="g1", entry="other-fact")
+        on_result = self.log.carry(kind="tool_result", session="g1")
+        self.log.serve(seam="carry_print", harness="grok", session="g1", entry="other-fact",
+                       carried_from=on_prompt, delivery="batch", at=1001.0)
+        self.log.serve(seam="carry_print", harness="grok", session="g1",
+                       carried_from=on_result, delivery="batch", at=1001.0)
+        self.assertEqual([(r["entry"], r["late"]) for r in self.rows()],
+                         [("agentsmd-version-control", False), ("other-fact", False),
+                          ("agentsmd-version-control", True)])
+
+    def test_cards_claim_shown_or_ignored_only_with_proof(self):
+        for at in (1000.0, 1001.0, 1002.0):  # capped, but no deny was proven shown
+            self.log.serve(outcome="unverified", checked="unverified", lift="not_read_capped", session="a", at=at)
+        self.log.serve(seam="deny", checked="shown", lift="read", session="b")
+        self.log.serve(seam="context", kind="tool_result", session="c")  # late, unproven
+        text = self.run_report()
+        self.assertNotIn("ignored rule", text)
+        self.assertIn("Proven shown: 0 of 1.", text)
+        late = next(c for c in text.split("\n\n") if c.startswith("## Late"))
+        self.assertNotIn("was shown", late)
+        self.assertIn("served after", late)
 
     def test_observer_evidence_and_its_gaps(self):
         self.see("a", self.log.serve(session="a", at=1000.0))

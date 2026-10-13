@@ -81,6 +81,7 @@ def rows(db_path: Path, observer: Observer, since: float | None = None):
                               AND later.session = m.session AND later.received_at > m.received_at) AS went_on,
                       EXISTS (SELECT 1 FROM deny_state k WHERE k.entry = c.entry AND k.version = c.version) AS must_know,
                       (SELECT om.kind FROM claims pc JOIN carries ca ON ca.delivery = pc.delivery
+                         AND ca.entry = c.entry AND ca.version = c.version
                          JOIN candidates oc ON oc.id = ca.candidate_id JOIN moments om ON om.id = oc.moment_id
                        WHERE pc.candidate_id = c.id LIMIT 1) AS carried_at
                FROM candidates c JOIN moments m ON m.id = c.moment_id
@@ -130,14 +131,14 @@ def _top(counter: Counter, n: int = 4) -> str:
 # (one deny rule per session and epoch, however often it denied). Every sentence ends with a full stop.
 CARDS = [
     ("Late", lambda r: r["late"], "serves",
-     "A before-action rule was shown after its own command had already run.",
+     "A before-action rule was served after its own command had already run.",
      "It came too late for that action and used the turn's serve budget (toolboxmd/chromeria#231)."),
     ("Hidden", lambda r: r["shown"] == "no", "serves",
-     "The call was denied, but the model saw another hook's deny reason instead of this rule.",
+     "The call was denied, but the deny text the model was shown did not contain this rule.",
      "The rule did not reach the agent and stays armed; on Grok some may be misread (toolboxmd/chromeria#228)."),
     ("Passed without reading", lambda r: r["lift"] == "not_read_capped", "rules",
-     "The agent was denied three times without reading the pointed file, then the call passed.",
-     "This is the one kind of ignored rule the log can see without a model."),
+     "A rule reached its cap of three denies without a read of the pointed file, so it stopped blocking.",
+     "Where a deny was proven shown, the agent skipped the rule; otherwise it may never have seen it."),
     ("Never lifted", lambda r: r["lift"] == "open", "rules",
      "The session went on after a deny without the agent reading the pointed file.",
      "The agent dropped the action or worked around it; only the transcript can tell which."),
@@ -171,6 +172,9 @@ def render(served: list[dict], canaries: int) -> str:
         if not hit:
             continue
         facts = f"{len(hit)} of {total} {unit}. Entries: {_top(Counter(r['entry'] for r in hit))}."
+        if title == "Passed without reading":
+            proven = {rule(r) for r in served if r["shown"] == "yes"}
+            facts += f" Proven shown: {sum(rule(r) in proven for r in hit)} of {len(hit)}."
         if title == "No Observer record":
             facts += f" Reasons: {_top(Counter(r['evidence'] for r in hit))}."
         else:
