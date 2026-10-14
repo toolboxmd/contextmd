@@ -4,7 +4,8 @@
 
 ### Changed
 
-- Command keys follow shell execution with nested substitutions, escape parity and exact heredocs (toolboxmd/chromeria#232).
+- The OpenCode plugin releases a reply it drops before the model sees it, so the reservation does not wait out the settle window. A reply already shown stays reserved until it settles.
+- Command keys follow shell execution with nested substitutions, dequoted command words and shell scripts, and literal heredocs (toolboxmd/chromeria#232).
 
 ## [0.6.1] - 2026-10-14
 

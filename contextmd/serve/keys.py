@@ -51,8 +51,17 @@ def words(command: str) -> list[str]:
     return [w for w in WORD_BREAK.split(command) if w]
 
 
-HEREDOC_START = re.compile(r"<<(-?)[ \t]*(['\"]?)(\w+)\2")
-SEPARATOR = re.compile(r"(?:^|[;&|(\n]|\$\()[ \t]*\S*$")
+# Literal markers use the same ASCII shell boundaries in both languages, including Unicode.
+HEREDOC_START = re.compile(r"""<<(-?)[ \t]*(['"]?)([^ \t\r\n;&|()<>'"\\]+)\2(?=$|[ \t\r\n;&|()<>])""")
+SHELL_BREAK = re.compile(r"[ \t\r\n;&|()<>]")
+# Same wrappers as Chromeria's Reads.ts; separate option values are not command names.
+WRAPPERS = {"command", "exec", "nohup", "time", "env", "sudo"}
+WRAPPER_ARGUMENTS = {
+    "env": ("-u", "--unset", "-C", "--chdir"),
+    "sudo": ("-u", "--user", "-g", "--group"),
+    "time": ("-f", "--format", "-o", "--output"),
+    "exec": ("-a",),
+}
 SHELLS = {"sh", "bash", "zsh", "dash"}
 
 
@@ -131,31 +140,72 @@ def _substitutions(text: str) -> str:
     return " ; ".join(out)
 
 
+def _shell_word(text: str, start: int) -> tuple[str, str, str, int]:
+    """One shell word: dequote its value, retaining unquoted fragments and substitutions."""
+    i, quote, value, plain, runs = start, "", "", "", []
+    while i < len(text):
+        ch = text[i]
+        if not quote and SHELL_BREAK.fullmatch(ch):
+            break
+        if ch == quote:
+            quote = ""
+            i += 1
+            continue
+        if not quote and ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and quote != "'":
+            next_char = text[i + 1:i + 2]
+            if not quote or next_char in "$`\"\\\n":
+                if next_char != "\n":
+                    value += next_char
+            else:
+                value += ch + next_char
+            if not quote:
+                plain += text[i:i + 2]
+            i += 2
+            continue
+        expansion = _expansion_at(text, i) if quote != "'" else None
+        if expansion:
+            body, end, command = expansion
+            raw = text[i:end]
+            value += raw
+            if not quote and not command:
+                plain += raw
+            runs.append(visible_command(body) if command else _substitutions(body))
+            i = end
+            continue
+        value += ch
+        if not quote:
+            plain += ch
+        i += 1
+    return value, plain, " ; ".join(runs), i
+
+
 def visible_command(command: str) -> str:
     """The parts of a shell command that run, for command keys (as Chromeria's ``Matcher.ts``,
     toolboxmd/chromeria#232): quoted strings and heredoc bodies are dropped; the string after
     ``sh -c`` runs, as do ``$(...)`` and backticks inside double quotes or an unquoted-marker
-    heredoc, unless escaped, and a quoted word in command position (``'gh' pr create``)."""
+    heredoc, unless escaped, and a quoted command after assignments or wrappers.
+    Shell script words lose their outer quote/escape layer before scanning."""
     text, out, i, heredocs = command, "", 0, []
+    position, wrapper, option_argument, shell, redirect = "command", "", False, False, False
     while i < len(text):
         ch = text[i]
-        if text.startswith("<<<", i):
-            # A here-string has an argument, not a body on following lines.
-            out += "<<<"
-            i += 3
-            continue
         opening = HEREDOC_START.match(text, i) if text.startswith("<<", i) and not text.startswith("<<<", i) else None
         if opening:
             heredocs.append((opening.group(3), opening.group(2) == "", opening.group(1) == "-"))
             out += " "
             i = opening.end()
+            redirect = False
             continue
         if ch == "\n" and heredocs:
             j, kept = i + 1, ""
             for word, expands, strip_tabs in heredocs:
                 # Search the body itself, so ``^`` anchors at its start (an empty heredoc).
                 tabs = r"\t*" if strip_tabs else ""
-                end = re.compile(rf"(^|\n){tabs}{word}(?=\n|$)").search(text[j:])
+                end = re.compile(rf"(^|\n){tabs}{re.escape(word)}(?=\n|$)").search(text[j:])
                 body_end = j + end.start() if end else len(text)
                 if expands:
                     kept += f" {_substitutions(text[j:body_end])} "
@@ -164,31 +214,46 @@ def visible_command(command: str) -> str:
             out += kept + "\n"
             i = j
             continue
-        if ch == "\\":
-            out += text[i:i + 2]
-            i += 2
-            continue
-        if ch == "`" or (text.startswith("$(", i) and not text.startswith("$((", i)):
-            body, i, _ = _expansion_at(text, i)
-            out += f" {visible_command(body)} "
-            continue
-        if ch not in "'\"":
+        if ch in " \t\r\n;&|()":
+            if ch in "\n;&|()":
+                position, wrapper = "command", ""
+                option_argument = shell = redirect = False
             out += ch
             i += 1
             continue
-        j = _quoted_end(text, i)
-        body = text[i + 1:j]
-        before = out.rstrip().split()
-        shell = before[-2].rsplit("/", 1)[-1] if len(before) >= 2 else ""
-        if shell in SHELLS and re.fullmatch(r"-[a-z]*c", before[-1]):
-            out += f" {visible_command(body)} "
-        elif SEPARATOR.search(out) and not re.search(r"\s", body):
-            out += body
-        elif ch == '"':
-            out += f" {_substitutions(body)} "
-        else:
-            out += " "
-        i = j + 1
+        if ch in "<>":
+            # A here-string consumes one word, without opening a body on following lines.
+            width = 3 if text.startswith("<<<", i) else 1
+            out += text[i:i + width]
+            i += width
+            redirect = True
+            continue
+        value, plain, runs, end = _shell_word(text, i)
+        kept = plain
+        if redirect:
+            redirect = False
+        elif position == "script":
+            kept = visible_command(value)
+            position = "argument"
+        elif position == "command":
+            if option_argument:
+                option_argument = False
+            elif wrapper and value.startswith("-") and value != "-":
+                option_argument = value in WRAPPER_ARGUMENTS.get(wrapper, ())
+                if value == "--":
+                    wrapper = ""
+            elif not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", text[i:end]):
+                if not re.search(r"\s", value):
+                    kept = value
+                program = value.rsplit("/", 1)[-1]
+                if program in WRAPPERS:
+                    wrapper = program
+                else:
+                    position, shell = "argument", program in SHELLS
+        elif shell and re.fullmatch(r"-[a-z]*c", value):
+            position = "script"
+        out += f" {kept} {runs} "
+        i = end
     return out
 
 

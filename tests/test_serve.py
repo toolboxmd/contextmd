@@ -163,6 +163,77 @@ class SegmentsTest(unittest.TestCase):
         ]
         self.assert_command_cases(runs, mentions)
 
+    def test_quoted_commands_after_assignments_and_wrappers(self):
+        runs = [
+            "FLAG=1 'gh' pr create",
+            "FLAG=1 g'h' pr create",
+            "FLAG='one two' OTHER=2 \"gh\" pr create",
+            "env 'gh' pr create",
+            "env g'h' pr create",
+            "env FLAG=1 'gh' pr create",
+            "env -u UNUSED 'gh' pr create",
+            "sudo -n 'gh' pr create",
+            "sudo -u nobody g'h' pr create",
+            "time 'gh' pr create",
+            "nohup 'gh' pr create",
+            "command -- 'gh' pr create",
+            "exec g'h' pr create",
+            "exec -a gh-alias 'gh' pr create",
+        ]
+        mentions = [
+            "FLAG=1 printf '%s' 'gh pr create'",
+            "env printf '%s' 'gh pr create'",
+            "env -u UNUSED printf '%s' 'gh pr create'",
+            "sudo -n printf '%s' 'gh pr create'",
+            "command printf '%s' 'gh pr create'",
+            "exec printf '%s' 'gh pr create'",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_shell_scripts_remove_one_outer_word_quote_layer(self):
+        runs = [
+            "bash -c \"\\\"g\\\"h pr create\"",
+            "sh -c \"\\\"g\\\"h pr create\"",
+            "zsh -lc \"\\\"g\\\"h pr create\"",
+            "bash -c \"g\"'h pr create'",
+            "bash -c \"\\\"g\\\"h\"' pr create'",
+            "env FLAG=1 bash -c \"\\\"g\\\"h pr create\"",
+            "bash -c 'gh pr create'",
+        ]
+        mentions = [
+            "bash -c \"echo \\\"gh pr create\\\"\"",
+            "sh -c \"printf '%s' \\\"gh pr create\\\"\"",
+            "zsh -lc \"echo \\\"gh pr create\\\"\"",
+            "bash -c 'echo '\"\\\"gh pr create\\\"\"",
+            "bash -c \"echo \\\"gh pr create\\\"\"suffix",
+            "bash -c 'echo \"gh pr create\"'",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_heredoc_ascii_boundaries_keep_unicode_and_punctuation_bodies_literal(self):
+        runs = [
+            "cat <<'ÉOF'\nÉOF\ngh pr create",
+            "cat <<'EÖF'\nEÖF\ngh pr create",
+            "cat <<'𝔈OF'\n𝔈OF\ngh pr create",
+            "cat <<ÉOF\n$(gh pr create)\nÉOF",
+            "cat <<EÖF\n$(gh pr create)\nEÖF",
+            "cat <<𝔈OF\n$(gh pr create)\n𝔈OF",
+            "cat <<'END-MARK'\nEND-MARK\ngh pr create",
+            "cat <<'EOF'\nEOF\ngh pr create",
+        ]
+        mentions = [
+            "cat <<'ÉOF'\ngh pr create\nÉOF",
+            "cat <<'EÖF'\ngh pr create\nEÖF",
+            "cat <<'𝔈OF'\ngh pr create\n𝔈OF",
+            "cat <<ÉOF\ngh pr create\nÉOF",
+            "cat <<EÖF\ngh pr create\nEÖF",
+            "cat <<𝔈OF\ngh pr create\n𝔈OF",
+            "cat <<\"EÖF\"\n$(gh pr create)\nEÖF",
+            "cat <<'END-MARK'\ngh pr create\nEND-MARK",
+            "cat <<'END.MARK'\nENDXMARK\ngh pr create\nEND.MARK",
+        ]
+        self.assert_command_cases(runs, mentions)
+
     def assert_command_cases(self, runs, mentions):
         # Same fixtures as Chromeria, with /bin/bash and a PATH-local gh stub as the oracle.
         e = store.Entry("e", "v", "t", commands=[["gh", "pr", "create"]])
@@ -579,13 +650,21 @@ PLUGIN_SCRIPT = r"""
 const [pluginPath] = process.argv.slice(2);
 const replies = [];      // pending moment replies, resolved by the script
 const settles = [];
+const releases = [];
+const track = (url) => {
+  if (url.includes("/release/")) {
+    releases.push(url);
+    return Promise.resolve({ status: 204 });
+  }
+  settles.push(url);
+  return Promise.resolve({ status: url.includes("expired") ? 404 : 204 });
+};
 globalThis.fetch = (url) => {
   if (url.endsWith("/moment")) {
     return new Promise((resolve) => replies.push((body) =>
       resolve({ status: 200, json: async () => body })));
   }
-  settles.push(url);
-  return Promise.resolve({ status: url.includes("expired") ? 404 : 204 });
+  return track(url);
 };
 const { default: plugin } = await import(pluginPath);
 const hooks = await plugin({ directory: "/tmp" });
@@ -595,6 +674,8 @@ const out = {};
 // A tool reply that arrives after the next user message belongs to the old turn.
 const late = hooks["tool.execute.after"]({ tool: "bash", sessionID: "s", callID: "c1", args: {} }, { output: "", metadata: { exit: 0 } });
 const turn = hooks["chat.message"]({ sessionID: "s" }, {});
+// chat.message drops the previous turn before it asks, so its fetch is one tick later.
+while (replies.length < 2) await new Promise((r) => setImmediate(r));
 replies[1]({ context: "NEW TURN" });
 await turn;
 replies[0]({ context: "OLD TURN" });
@@ -611,6 +692,7 @@ m = msgs();
 await hooks["experimental.chat.messages.transform"]({}, m);
 out.afterDeny = m.messages[0].parts.map((p) => p.text);
 out.settles = settles.length;
+out.released = releases.length;
 
 // A settle that failed in transit is retried on the next model call; a refused one is shown no more.
 let failSettle = 1;
@@ -618,11 +700,16 @@ globalThis.fetch = (url) => {
   if (url.endsWith("/moment")) {
     return new Promise((resolve) => replies.push((body) => resolve({ status: 200, json: async () => body })));
   }
+  if (url.includes("/release/")) {
+    releases.push(url);
+    return Promise.resolve({ status: 204 });
+  }
   settles.push(url);
   if (failSettle-- > 0) return Promise.reject(new Error("timeout"));
   return Promise.resolve({ status: 404 });
 };
 const t2 = hooks["chat.message"]({ sessionID: "s" }, {});
+while (replies.length < 4) await new Promise((r) => setImmediate(r));
 replies[3]({ context: "SECOND" });
 await t2;
 const before = settles.length;
@@ -637,12 +724,14 @@ out.afterRefusal = m.messages[0].parts.map((p) => p.text);
 
 // With the off switch, queued text is neither shown nor settled, and is forgotten.
 const t3 = hooks["chat.message"]({ sessionID: "s" }, {});
+while (replies.length < 5) await new Promise((r) => setImmediate(r));
 replies[4]({ context: "THIRD" });
 await t3;
 const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
 const offDir = process.argv[3];
 writeFileSync(offDir + "/off", "");
 const settlesBeforeOff = settles.length;
+const releasesBeforeOff = releases.length;
 m = msgs();
 await hooks["experimental.chat.messages.transform"]({}, m);
 out.whileOff = m.messages[0].parts.map((p) => p.text);
@@ -651,6 +740,34 @@ m = msgs();
 await hooks["experimental.chat.messages.transform"]({}, m);
 out.afterOff = m.messages[0].parts.map((p) => p.text);
 out.settlesWhileOff = settles.length - settlesBeforeOff;
+out.releasesWhileOff = releases.length - releasesBeforeOff;
+
+// Shown, then the settle failed: the next turn must not release that reply.
+let failShown = 1;
+globalThis.fetch = (url) => {
+  if (url.endsWith("/moment")) {
+    return new Promise((resolve) => replies.push((body) => resolve({ status: 200, json: async () => body })));
+  }
+  if (url.includes("/release/")) {
+    releases.push(url);
+    return Promise.resolve({ status: 204 });
+  }
+  settles.push(url);
+  if (failShown-- > 0) return Promise.reject(new Error("timeout"));
+  return Promise.resolve({ status: 204 });
+};
+const seen = hooks["chat.message"]({ sessionID: "shown" }, {});
+while (replies.length < 6) await new Promise((r) => setImmediate(r));
+replies[5]({ context: "SEEN" });
+await seen;
+m = { messages: [{ info: { role: "user", id: "m2", sessionID: "shown" }, parts: [] }] };
+await hooks["experimental.chat.messages.transform"]({}, m);
+const releasesBeforeDrop = releases.length;
+const next = hooks["chat.message"]({ sessionID: "shown" }, {});
+while (replies.length < 7) await new Promise((r) => setImmediate(r));
+replies[6]({ context: "NEXT" });
+await next;
+out.releasedAfterShown = releases.length - releasesBeforeDrop;
 console.log(JSON.stringify(out));
 """
 
@@ -676,9 +793,14 @@ class OpenCodePluginTest(unittest.TestCase):
             self.assertNotIn("RULE", out["thrown"])
             self.assertEqual(out["afterDeny"], ["NEW TURN", "RULE"])
             self.assertEqual(out["settles"], 2)
+            self.assertEqual(out["released"], 1)
             self.assertEqual(out["retried"], 2)
             self.assertEqual(out["afterRefusal"], [])
-            self.assertEqual((out["whileOff"], out["afterOff"], out["settlesWhileOff"]), ([], [], 0))
+            self.assertEqual(
+                (out["whileOff"], out["afterOff"], out["settlesWhileOff"], out["releasesWhileOff"]),
+                ([], [], 0, 1),
+            )
+            self.assertEqual(out["releasedAfterShown"], 0)
 
 
 TRUNCATION_SCRIPT = r"""
