@@ -73,7 +73,7 @@ flowchart TD
     SP["Per-row proof that a serve was shown"]
     %% SP: toolboxmd/chromeria#245
     CK["Command keys fire on runs, not mentions"]
-    %% CK: toolboxmd/chromeria#232
+    %% CK: toolboxmd/chromeria#232 toolboxmd/chromeria#284
     RD["Readers called by path; OpenCode reservations"]
     %% RD: toolboxmd/chromeria#221
     LF["Library format, flat"]

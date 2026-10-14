@@ -27,12 +27,13 @@ Answer every prompt of the PR template before opening a PR.
 ```
 
 - `command` matches wherever its words appear in that order in the shell
-  command. The command is not parsed: it is cut into words at whitespace,
-  quotes, backslashes and shell punctuation, so the key also matches inside
-  quotes, heredocs, `bash -c` strings and substitutions, and `cd` or `env`
-  before it does not matter. The first word may be an executable path
-  (`/usr/bin/gh`). Words that only appear as data also match; that rare false
-  hit costs one extra model round and still delivers the rule.
+  command. Unquoted words and quoted words whose dequoted value has no whitespace
+  count, including arguments and quoted file paths. Quoted prose and literal
+  heredoc bodies do not match. Shell scripts passed to `sh -c` (also `bash`,
+  `zsh`, `dash` and `ksh`), command substitutions and backticks contribute their
+  commands. Shell invocations count in any word position, so printed invocations
+  such as `echo bash -c '...'` also match. The first word may be an executable
+  path (`/usr/bin/gh`).
 - `path` is a glob on the repository-relative path of a file tool (`**` spans
   directories).
 - `error` matches a substring of the failure text or of the tool's output,

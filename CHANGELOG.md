@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.3] - 2026-10-14
+
+### Changed
+
+- Command keys keep unquoted words and single quoted tokens, skip quoted prose and literal heredoc bodies, and scan executed substitutions and dequoted shell scripts (toolboxmd/chromeria#232).
+
 ## [0.6.2] - 2026-10-14
 
 ### Changed

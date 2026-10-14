@@ -39,6 +39,424 @@ class SegmentsTest(unittest.TestCase):
         for command in ["gh pr list", "gh issue create", "ghx pr create", "echo gh pr", "gh pr createx"]:
             self.assertFalse(hit(command), command)
 
+    def test_command_key_follows_what_bash_runs_not_mentions(self):
+        # Same cases as Chromeria's Matcher.ts (toolboxmd/chromeria#232, #243).
+        def hit(command, key="gh pr create"):
+            e = store.Entry("e", "v", "t", commands=[key.split()])
+            return e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+        for command in ["zsh -lc 'gh pr create --fill'", '/bin/bash -c "cd x && gh pr create"',
+                        "cat > notes.md <<'EOF'\nhello\nEOF\ngh pr create",
+                        "gh pr create --title \"x\" --body-file - <<'EOF'\nbody\nEOF",
+                        "cat <<EOF\n$(gh pr create)\nEOF", "cat <<EOF\n`gh pr create`\nEOF",
+                        "bash -c \"'gh' pr create\"", "'gh' pr create", '"gh" pr create --fill', "g'h' pr create"]:
+            self.assertTrue(hit(command), command)
+        for command in ['echo "live check: gh pr create"', "echo 'gh pr create'",
+                        "cat <<'EOF'\nthen run gh pr create\nEOF", "python3 - <<'PY'\nkeys = ['gh pr create']\nPY",
+                        "python3 -c \"print('gh pr create')\"", 'gh issue create --title t --body "open it with gh pr create"',
+                        "cat <<'EOF'\n$(gh pr create)\nEOF", 'cat <<"EOF"\n$(gh pr create)\nEOF',
+                        'echo "\\$(gh pr create)"', 'echo "\\`gh pr create\\`"', "cat <<EOF\nrun gh pr create later\nEOF"]:
+            self.assertFalse(hit(command), command)
+        db = lambda command: hit(command, "chromeria-v2.sqlite")
+        for command in ["sqlite3 chromeria-v2.sqlite .tables", "sqlite3 ~/.t3/userdata/chromeria-v2.sqlite",
+                        "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite", "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
+                        "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite 'select 1'"]:
+            self.assertTrue(db(command), command)
+        # A quoted path without whitespace is a real file argument and matches the bare key.
+        self.assertTrue(db('sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables'))
+        # Neither URI hits the bare command key: the basename includes ?mode=ro.
+        for command in [
+            "sqlite3 'file:/Users/u/.t3/userdata/chromeria-v2.sqlite?mode=ro'",
+            "sqlite3 file:/Users/u/.t3/userdata/chromeria-v2.sqlite?mode=ro",
+        ]:
+            self.assertFalse(db(command), command)
+        # Live bake mentions: candidate 1672 edits a test; 26379 writes an Issue body.
+        for command in [
+            "python3 - <<'EOF'\nfrom pathlib import Path\np = Path('tests/test_serve.py')\np.write_text(p.read_text().replace('state.sqlite', 'chromeria-v2.sqlite'))\nEOF",
+            "gh issue create --title \"Record the bake\" --body-file - <<'EOF'\nThe entry names chromeria-v2.sqlite in a test fixture.\nEOF",
+            "gh issue create --title \"Record the bake\" --body \"The entry names chromeria-v2.sqlite in a test fixture.\"",
+        ]:
+            self.assertFalse(db(command), command)
+
+    def test_command_after_an_empty_heredoc_still_matches(self):
+        # Sol review of #52: the terminator right at the body's start must end the heredoc.
+        def hit(command):
+            e = store.Entry("e", "v", "t", commands=[["gh", "pr", "create"]])
+            return e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+        for command in ["cat <<'EOF'\nEOF\ngh pr create", "cat <<EOF\nEOF\ngh pr create",
+                        "cat <<A <<B\nA\nB\ngh pr create", "cat <<A <<'B'\nx\nA\nB\ngh pr create",
+                        "cat <<'A'\nA\ncat <<'B'\nB\ngh pr create"]:
+            self.assertTrue(hit(command), command)
+        self.assertFalse(hit("cat <<'A'\nA\ncat <<'B'\ngh pr create\nB"))
+
+    def test_substitution_boundaries_keep_inner_quotes_and_nested_bodies(self):
+        runs = [
+            "echo \"$(gh pr create --title \"hello\")\"",
+            "echo \"$(gh pr create $(printf x))\"",
+            "echo \"$(gh pr create \"$(printf x)\")\"",
+            "echo $(gh pr create --title \"hello\")",
+            "echo \"`gh pr create --title \"hello\"`\"",
+            "echo \"`printf \"%s\" \\`gh pr create\\``\"",
+            "cat <<EOF\n$(gh pr create --title \"hello\" $(printf x))\nEOF",
+        ]
+        mentions = [
+            "echo '$(gh pr create)'",
+            "echo \"$(printf \"%s\" \"gh pr create\")\"",
+            "echo \"`printf \"%s\" \"gh pr create\"`\"",
+            "echo \"$(printf \"%s\" \"$(printf \"%s\" \"gh pr create\")\")\"",
+            "cat <<'EOF'\n$(gh pr create --title \"hello\" $(printf x))\nEOF",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_substitution_escapes_use_backslash_parity(self):
+        # Two/four literal backslashes run; one/three leave the operator literal.
+        runs = [
+            "echo \"\\\\$(gh pr create)\"",
+            "echo \"\\\\\\\\$(gh pr create)\"",
+            "cat <<EOF\n\\\\$(gh pr create)\nEOF",
+            "cat <<EOF\n\\\\\\\\$(gh pr create)\nEOF",
+            "echo \"\\\\`gh pr create`\"",
+            "cat <<EOF\n\\\\`gh pr create`\nEOF",
+        ]
+        mentions = [
+            "echo \"\\$(gh pr create)\"",
+            "echo \"\\\\\\$(gh pr create)\"",
+            "cat <<EOF\n\\$(gh pr create)\nEOF",
+            "cat <<EOF\n\\\\\\$(gh pr create)\nEOF",
+            "echo \"\\`gh pr create\\`\"",
+            "cat <<EOF\n\\`gh pr create\\`\nEOF",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_heredoc_terminators_are_exact_except_leading_tabs_for_strip(self):
+        runs = [
+            "cat <<'EOF'\nEOF\ngh pr create",
+            "cat <<EOF\nEOF\ngh pr create",
+            "cat <<-'EOF'\n\tEOF\ngh pr create",
+            "cat <<-EOF\n\tEOF\ngh pr create",
+            "cat <<A <<'B'\nA\nB\ngh pr create",
+            "cat <<'A'\nA\ncat <<'B'\nB\ngh pr create",
+        ]
+        mentions = [
+            "cat <<'EOF'\n EOF\ngh pr create\nEOF",
+            "cat <<'EOF'\n\tEOF\ngh pr create\nEOF",
+            "cat <<'EOF'\nEOF \ngh pr create\nEOF",
+            "cat <<'EOF'\nEOF\t\ngh pr create\nEOF",
+            "cat <<-'EOF'\n EOF\ngh pr create\nEOF",
+            "cat <<-'EOF'\n\tEOF \ngh pr create\nEOF",
+            "cat <<'EOF'\nEOFX\ngh pr create\nEOF",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_here_strings_and_arithmetic_or_parameter_boundaries(self):
+        runs = [
+            "cat <<<EOF\ngh pr create",
+            "echo \"$(gh pr create $((1 + (2))))\"",
+            "echo \"$(gh pr create ${v:-\")\"})\"",
+            "echo \"$((1 + $(gh pr create)0))\"",
+            "echo \"${v:-$(gh pr create --title \"hello\")}\"",
+            "cat <<EOF\n$((1 + $(gh pr create)0))\nEOF",
+        ]
+        mentions = [
+            "cat <<<\"gh pr create\"",
+            "echo \"$((1 + (2))) gh pr create\"",
+            "echo \"${v:-gh pr create}\"",
+            "echo \"$(printf \"%s\" \"${v:-gh pr create}\")\"",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_quoted_commands_after_assignments_and_wrappers(self):
+        runs = [
+            "FLAG=1 'gh' pr create",
+            "FLAG=1 g'h' pr create",
+            "FLAG='one two' OTHER=2 \"gh\" pr create",
+            "env 'gh' pr create",
+            "env g'h' pr create",
+            "env FLAG=1 'gh' pr create",
+            "env -u UNUSED 'gh' pr create",
+            "sudo -n 'gh' pr create",
+            "sudo -u nobody g'h' pr create",
+            "time 'gh' pr create",
+            "nohup 'gh' pr create",
+            "command -- 'gh' pr create",
+            "exec g'h' pr create",
+            "exec -a gh-alias 'gh' pr create",
+        ]
+        mentions = [
+            "FLAG=1 printf '%s' 'gh pr create'",
+            "env printf '%s' 'gh pr create'",
+            "env -u UNUSED printf '%s' 'gh pr create'",
+            "sudo -n printf '%s' 'gh pr create'",
+            "command printf '%s' 'gh pr create'",
+            "exec printf '%s' 'gh pr create'",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_shell_scripts_remove_one_outer_word_quote_layer(self):
+        runs = [
+            "bash -c \"\\\"g\\\"h pr create\"",
+            "sh -c \"\\\"g\\\"h pr create\"",
+            "zsh -lc \"\\\"g\\\"h pr create\"",
+            "bash -c \"g\"'h pr create'",
+            "bash -c \"\\\"g\\\"h\"' pr create'",
+            "env FLAG=1 bash -c \"\\\"g\\\"h pr create\"",
+            "bash -c 'gh pr create'",
+        ]
+        mentions = [
+            "bash -c \"echo \\\"gh pr create\\\"\"",
+            "sh -c \"printf '%s' \\\"gh pr create\\\"\"",
+            "zsh -lc \"echo \\\"gh pr create\\\"\"",
+            "bash -c 'echo '\"\\\"gh pr create\\\"\"",
+            "bash -c \"echo \\\"gh pr create\\\"\"suffix",
+            "bash -c 'echo \"gh pr create\"'",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_heredoc_ascii_boundaries_keep_unicode_and_punctuation_bodies_literal(self):
+        runs = [
+            "cat <<'ÉOF'\nÉOF\ngh pr create",
+            "cat <<'EÖF'\nEÖF\ngh pr create",
+            "cat <<'𝔈OF'\n𝔈OF\ngh pr create",
+            "cat <<ÉOF\n$(gh pr create)\nÉOF",
+            "cat <<EÖF\n$(gh pr create)\nEÖF",
+            "cat <<𝔈OF\n$(gh pr create)\n𝔈OF",
+            "cat <<'END-MARK'\nEND-MARK\ngh pr create",
+            "cat <<'EOF'\nEOF\ngh pr create",
+        ]
+        mentions = [
+            "cat <<'ÉOF'\ngh pr create\nÉOF",
+            "cat <<'EÖF'\ngh pr create\nEÖF",
+            "cat <<'𝔈OF'\ngh pr create\n𝔈OF",
+            "cat <<ÉOF\ngh pr create\nÉOF",
+            "cat <<EÖF\ngh pr create\nEÖF",
+            "cat <<𝔈OF\ngh pr create\n𝔈OF",
+            "cat <<\"EÖF\"\n$(gh pr create)\nEÖF",
+            "cat <<'END-MARK'\ngh pr create\nEND-MARK",
+            "cat <<'END.MARK'\nENDXMARK\ngh pr create\nEND.MARK",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_shell_script_options_before_or_clustered_with_c(self):
+        runs = [
+            "bash -ce 'gh pr create'",
+            "bash -cE 'gh pr create'",
+            "bash -ec 'gh pr create'",
+            "bash -o pipefail -c 'gh pr create'",
+            "bash --noprofile -o pipefail -ce '\"g\"h pr create'",
+            "env FLAG=1 bash -o pipefail -ce 'gh pr create'",
+        ]
+        mentions = [
+            "bash -ce 'echo \"gh pr create\"'",
+            "bash -o pipefail -c 'echo \"gh pr create\"'",
+            "bash -o pipefail -ce 'echo \"gh pr create\"'",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_ansi_c_quoted_shell_script_words(self):
+        runs = [
+            "bash -c $'gh pr create'",
+            "bash -c $'gh pr create\\0; echo mention'",
+            "bash -c $'\\x67h pr create'",
+            "bash -c $'\\147h pr create'",
+            "bash -c $'\\u0067h pr create'",
+            "bash -c $'\\x27gh\\x27 pr create'",
+            "bash -c $'gh\\x20pr\\tcreate'",
+            "sh -c $'\\x67h pr create'",
+            "bash -c $'g'\"h pr create\"",
+        ]
+        mentions = [
+            "bash -c $'echo \\\"gh pr create\\\"'",
+            "bash -c $'printf \\'%s\\' \\'gh pr create\\''",
+            "bash -c $'echo \\x22gh pr create\\x22'",
+            "bash -c $'echo \\047gh pr create\\047'",
+            "echo $'gh pr create'",
+            "bash -c $'echo \\0; gh pr create'",
+            "bash -c $'echo \"$(printf \\'%s\\' \\'gh pr create\\')\"'",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_quoted_single_tokens_count_in_every_word_position(self):
+        # Single quoted tokens count as arguments; this does not claim they execute gh.
+        runs = [
+            "printf '%s ' 'gh' 'pr' 'create'",
+            "echo \"gh\" pr create",
+            "echo g'h' pr create",
+            "echo g\"h\" pr create",
+            "echo $'\\x67h' pr create",
+        ]
+        mentions = [
+            "printf '%s ' 'gh pr create'",
+            "echo \"live check: gh pr create\"",
+            "echo $'gh pr create'",
+            "echo g'h pr create'",
+        ]
+        e = store.Entry("e", "v", "t", commands=["gh pr create".split()])
+        for commands, expected in ((runs, True), (mentions, False)):
+            for command in commands:
+                with self.subTest(command=command):
+                    hit = e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+                    self.assertEqual(hit, expected)
+
+    def test_numbered_redirections_preserve_shell_commands(self):
+        runs = [
+            "2>/dev/null 'gh' pr create",
+            "2>/dev/null bash -c 'gh pr create'",
+            "2>&1 env 'gh' pr create",
+            ">/dev/null 'gh' pr create",
+            "2>>/dev/null g'h' pr create",
+            "2>&1 bash -ce 'gh pr create'",
+            "3<<'EOF' bash -c 'gh pr create'\nliteral gh pr create\nEOF",
+        ]
+        mentions = [
+            "2>/dev/null printf '%s' 'gh pr create'",
+            "2>/dev/null bash -c 'echo \"gh pr create\"'",
+            "2>&1 env printf '%s' 'gh pr create'",
+            "3<<'EOF' cat\nliteral gh pr create\nEOF",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_quoted_words_after_shell_control_syntax(self):
+        runs = [
+            "if true; then 'gh' pr create; fi",
+            "! 'gh' pr create",
+            "{ 'gh' pr create; }",
+            "if false; then :; else g'h' pr create; fi",
+            "for n in 1; do \"gh\" pr create; done",
+            "time -p 'gh' pr create",
+        ]
+        mentions = [
+            "if true; then printf '%s' 'gh pr create'; fi",
+            "! printf '%s' 'gh pr create'",
+            "{ printf '%s' 'gh pr create'; }",
+            "for n in 1; do printf '%s' 'gh pr create'; done",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_shell_options_stop_after_one_script(self):
+        runs = [
+            "bash -c 'gh pr create' _ -c 'echo \"gh pr create\"'",
+            "bash -c 'echo done' _ -c \"$(gh pr create)\"",
+            "sh -c 'gh pr create' -c 'echo \"gh pr create\"'",
+        ]
+        mentions = [
+            "bash -c 'echo \"$@\"' _ -c 'gh pr create'",
+            "bash -c 'echo done' -- -c 'gh pr create'",
+            "bash -c 'echo done' -c 'gh pr create'",
+            "bash -ce 'echo done' _ -ce 'gh pr create'",
+            "sh -c 'echo done' _ -c 'gh pr create'",
+            "zsh -lc 'echo done' _ -c 'gh pr create'",
+            "bash -c $'echo done' _ -c $'gh pr create'",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_quoted_single_database_tokens_match_but_prose_does_not(self):
+        # Single quoted tokens count as arguments; this does not claim they execute gh.
+        runs = [
+            "sqlite3 'chromeria-v2.sqlite' .tables",
+            "sqlite3 \"/Users/u/.t3/userdata/chromeria-v2.sqlite\" .tables",
+            "sqlite3 $'chromeria-v2.sqlite' .tables",
+            "sqlite3 chromeria-v2'.sqlite' .tables",
+        ]
+        mentions = [
+            "echo 'the file chromeria-v2.sqlite'",
+            "echo \"open /Users/u/.t3/userdata/chromeria-v2.sqlite later\"",
+            "echo $'the file chromeria-v2.sqlite'",
+            "echo prefix' the file chromeria-v2.sqlite'",
+        ]
+        e = store.Entry("e", "v", "t", commands=["chromeria-v2.sqlite".split()])
+        for commands, expected in ((runs, True), (mentions, False)):
+            for command in commands:
+                with self.subTest(command=command):
+                    hit = e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+                    self.assertEqual(hit, expected)
+
+    def test_shell_scripts_after_controls_and_command_running_tools(self):
+        runs = [
+          "if true; then bash -c 'gh pr create'; fi",
+          "! bash -c 'gh pr create'",
+          "{ bash -c 'gh pr create'; }",
+          "for i in 1; do bash -c 'gh pr create'; done",
+          "xargs bash -c 'gh pr create'",
+          "find . -exec bash -c 'gh pr create' \\;",
+          "timeout 5 bash -c 'gh pr create'",
+          "ssh host bash -c 'gh pr create'",
+          "xargs bash -o pipefail -ce 'gh pr create'",
+          "env ksh -c 'gh pr create'"
+        ]
+        mentions = [
+          "if true; then bash -c 'echo \"gh pr create\"'; fi",
+          "! bash -c 'echo \"gh pr create\"'",
+          "{ bash -c 'echo \"gh pr create\"'; }",
+          "for i in 1; do bash -c 'echo \"gh pr create\"'; done",
+          "xargs bash -c 'echo \"gh pr create\"'",
+          "find . -exec bash -c 'echo \"gh pr create\"' \\;",
+          "timeout 5 bash -c 'echo \"gh pr create\"'",
+          "ssh host bash -c 'echo \"gh pr create\"'",
+          "env ksh -c 'echo \"gh pr create\"'"
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_printed_shell_invocations_match_in_the_safe_direction(self):
+        # Printed shell invocations match by policy; these cases do not execute gh.
+        runs = [
+          "echo bash -c 'gh pr create'",
+          "echo sh -c 'gh pr create'",
+          "echo \"bash\" -ce 'gh pr create'",
+          "echo b'a'sh -o pipefail -c 'gh pr create'",
+          "echo ksh -c 'gh pr create'"
+        ]
+        mentions = [
+          "echo bash -c 'echo \"gh pr create\"'",
+          "echo 'bash -c gh pr create'",
+          "echo bash -c 'echo done' _ -c 'gh pr create'"
+        ]
+        e = store.Entry("e", "v", "t", commands=[["gh", "pr", "create"]])
+        for commands, expected in ((runs, True), (mentions, False)):
+            for command in commands:
+                with self.subTest(command=command):
+                    self.assertEqual(e.matches(keys.extract("Bash", {"command": command}, None)) is not None, expected)
+
+    def test_ascii_whitespace_parity_for_all_six_divergent_code_points(self):
+        # Same escaped fixtures as Chromeria; none of these characters is ASCII whitespace.
+        for sep, encoded in [
+            ("\u0085", "\\u0085"), ("\u001c", "\\u001c"), ("\u001d", "\\u001d"),
+            ("\u001e", "\\u001e"), ("\u001f", "\\u001f"), ("\ufeff", "\\ufeff"),
+        ]:
+            with self.subTest(code_point=encoded):
+                token = f"gh{sep}pr{sep}create"
+                for command in [f"echo {token}", f"echo '{token}'"]:
+                    result = keys.extract("Bash", {"command": command}, None)
+                    self.assertEqual(result.words, ["echo", token])
+                    self.assertFalse(result.has_command(["gh", "pr", "create"]))
+                self.assertEqual(
+                    keys.extract("Bash", {"command": f"printf '%s' '{token}'"}, None).words,
+                    ["printf", "%s", token],
+                )
+                self.assertEqual(
+                    keys.extract("Bash", {"command": f"bash -c $'echo gh{encoded}pr{encoded}create'"}, None).words,
+                    ["bash", "-c", "echo", token],
+                )
+                path = f"{sep}/Users/u/.t3/userdata/chromeria-v2.sqlite"
+                command = f"sqlite3 '{path}'"
+                result = keys.extract("Bash", {"command": command}, None)
+                self.assertEqual(result.words, ["sqlite3", path])
+                self.assertEqual(keys.shell_paths(keys.words(command)), [path])
+                self.assertTrue(result.has_command(["chromeria-v2.sqlite"]))
+                self.assertEqual(keys.normalize_error(f"{sep}GH{sep}12{sep}"), f"{sep}gh{sep}#{sep}")
+        self.assertEqual(keys.words("gh \t\n\r\v\fpr create"), ["gh", "pr", "create"])
+        self.assertFalse(
+            keys.extract("Bash", {"command": "echo 'gh \t\n\r\v\fpr create'"}, None).has_command(["gh", "pr", "create"])
+        )
+        self.assertEqual(keys.normalize_error(" \t\n\r\v\fGH 12 \t\n\r\v\f"), "gh #")
+
+    def assert_command_cases(self, runs, mentions):
+        # Same fixtures as Chromeria, with /bin/bash and a PATH-local gh stub as the oracle.
+        e = store.Entry("e", "v", "t", commands=[["gh", "pr", "create"]])
+        for commands, expected in ((runs, True), (mentions, False)):
+            for command in commands:
+                with self.subTest(command=command):
+                    hit = e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+                    self.assertEqual(hit, expected)
+
     def test_path_key_matches_files_a_shell_command_names(self):
         # As Chromeria's Matcher.ts (toolboxmd/chromeria#234).
         e = store.Entry("e", "v", "t", paths=["**/chromeria-v2.sqlite"])
