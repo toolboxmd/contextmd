@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.0] - 2026-10-14
+
+### Added
+
+- Add an optional Great Library pointer and persist it in OpenCode native history
+
 ## [1.1.0] - 2026-10-14
 
 ### Added

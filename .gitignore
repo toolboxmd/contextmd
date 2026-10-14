@@ -1,2 +1,3 @@
 __pycache__/
 *.pyc
+tests/opencode-sdk/node_modules/

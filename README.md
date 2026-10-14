@@ -134,11 +134,19 @@ AgentsMD: follow the research procedure.
 
 | Moment | Served |
 | --- | --- |
-| Session start | The session-start files, outside the turn budgets (Claude Code). After compaction or `/clear` a new context epoch starts and they are served again. |
+| Session start | The session-start files, outside the turn budgets (Claude Code). After compaction or `/clear` a new context epoch starts; the configured Great Library pointer is served first within the run budget (Claude Code, Codex). |
 | User message | A new Chromeria run is a new turn: an 8,000-byte serve budget and a 2,000-byte deny budget. Cue scores the conversation and its fires are served at once (on Grok, at the next `PreToolUse`). |
 | Before a tool call | A matching must-know-before entry denies the call. A record-pointer rule keeps denying until a full read of its target in this session and context epoch; an entry self-pointer needs a full read after that version's first deny. An inline rule lifts once the model was shown it whole. After 3 denies without that, the next call passes, logged `not_read_capped`. One deny carries every whole rule that fits; the rest deny their next matching call. |
 | Tool result or failure | Other matching entries and the Cue fires, first fit within the serve budget and 2,000 bytes per output. On Grok, which discards this output, they are printed at the next `PreToolUse`. |
 | Before done | Logged only. |
+
+When configured, the Great Library pointer reaches the first user message on
+Claude Code, Codex and OpenCode, and the immediate continuation after compaction.
+OpenCode saves it in native message history and keeps one owned copy in each
+request, including native replay. Grok receives it in each new session's system
+context and retains it through compaction. The pointer uses the run's 8,000-byte
+serve budget; the log identifies it as `great_library`. Cursor and Antigravity
+do not support this pointer yet.
 
 Cue runs on the GPU serving host (see [Cue service](#cue-service)). A user
 message or a failed call is scored at once and waits at most 650 ms. Before a
@@ -195,6 +203,26 @@ changed file as `<file>.contextmd-backup`. The hook finds the server through
 Chromeria's `<base>/userdata/server-runtime.json`. With the server down, the
 hook gives up at once; a slow or unreachable server is cut off after 2 seconds
 (4 for Grok), and the call runs unserved.
+
+To make shared and personal knowledge discoverable, add a `great_library`
+index-file path to that configuration, for example:
+
+```json
+"great_library": "~/dev/promachos/library/README.md"
+```
+
+Before adding the key, verify that the **running** Chromeria build supports it,
+update ContextMD to a supporting version, and reinstall its OpenCode plugin
+with `bin/contextmd-serve install opencode --base ~/.t3`. Older Chromeria builds
+reject unknown configuration keys and stop all serving. Then run
+`bin/contextmd-serve check`: it must exit 0 and report an existing regular index
+file. The path must be absolute or start with `~/`, contain no controls or line
+separators, and fit 1,024 UTF-8 bytes after home expansion.
+
+Removing the key stops new pointer deliveries and Grok installations. Copies
+already delivered retain their native lifetime: until compaction on Claude
+Code and Codex, in OpenCode's stored history, and for the life of a Grok session.
+An existing Grok session cannot acquire a changed index path; start a new session.
 
 ### Off switch and log
 
@@ -334,7 +362,10 @@ The card reads Observer's ledger read-only, like the report, and gets tool
 input and results from `agent-observer event show`, which is a read-only
 command. Cards hold transcript text, so keep them on the machine.
 
-Run the tests with `python3 -m unittest discover -s tests -t .`. The contract
+Install the pinned OpenCode test SDK with
+`npm ci --ignore-scripts --prefix tests/opencode-sdk`, then run the tests with
+`python3 -m unittest discover -s tests -t .`. The pointer tests exercise that
+SDK's configured transport; the SDK is not a runtime dependency. The contract
 suite in `tests/test_contract.py` runs the real hook against a Chromeria dev
 server when `CONTEXTMD_CHROMERIA` names a Chromeria checkout.
 The standalone Library test compares the shared corpus copies without

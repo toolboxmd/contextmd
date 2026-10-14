@@ -80,7 +80,11 @@ def main(argv=None) -> int:
                     errors.append(f"{file}: {exc}")
             print(json.dumps({"entries": entries, "errors": errors}, indent=2))
             return 1 if errors else 0
-        cfg = config.load()
+        try:
+            cfg = config.load()
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"errors": [str(exc)]}, indent=2))
+            return 1
         directory = store.library_dir(str(ns.project)) if ns.project else None
         sources = ([store.Source(directory, False)] if directory else []) + cfg.exact_keys + cfg.cue
         library = store.load(sources)
@@ -97,6 +101,16 @@ def main(argv=None) -> int:
                     "entries": [{**row(e), "name": e.name, "applies_chars": len(e.applies)} for e in library.cue],
                     "owners": library.owners, "errors": library.errors, "legacy": library.legacy},
         }
+        index = Path(cfg.great_library) if cfg.great_library is not None else None
+        report["great_library"] = {
+            "configured": index is not None,
+            "path": str(index) if index is not None else None,
+            "exists": index.is_file() if index is not None else False,
+            "owner": store.head_commit(index.parent) if index is not None else None,
+        }
+        missing_index = index is not None and not report["great_library"]["exists"]
+        if missing_index:
+            report["great_library"]["error"] = "index is missing or not a regular file"
         if ns.project:
             project_entries = {e.path: e for e in [*library.entries, *library.cue]
                                if directory and Path(e.path).parent == Path(directory)}
@@ -104,7 +118,7 @@ def main(argv=None) -> int:
                                  "owners": {directory: library.owners[directory]} if directory in library.owners else {},
                                  "errors": library.errors, "legacy": library.legacy}
         print(json.dumps(report, indent=2))
-        return 1 if library.errors else 0
+        return 1 if library.errors or missing_index else 0
     base = ns.base.expanduser().resolve()
     if ns.cmd == "health":
         return _health(ns, base)
