@@ -86,15 +86,17 @@ def rule_text(row: dict, db_path: Path) -> dict:
         root = Path(directory)
         if not root.is_dir():
             continue
-        for path in sorted(root.rglob("*.md")):
+        for path in store.entry_files(root):
             try:
-                entry = store.parse(path)
+                entry = store.parse_file(path, tolerant=True)
             except (ValueError, UnicodeDecodeError):
                 continue
             if entry.id != row["entry"]:
                 continue
             if entry.version == row["version"]:
-                return {"source": "store", "text": entry.text, "target": entry.target}
+                exact, cue = entry.views()
+                view = exact or cue
+                return {"source": "store", "text": entry.body, "target": view.target}
             found = _from_history(path, row["version"])
             if found:
                 return found
@@ -166,10 +168,11 @@ def _from_history(path: Path, version: str) -> dict | None:
         raw = git("show", f"{rev}:{rel}").stdout
         if raw and hashlib.sha256(raw).hexdigest()[:12] == version:
             try:
-                entry = store.parse(path, raw)
+                entry = store.parse_file(path, raw, tolerant=True)
             except (ValueError, UnicodeDecodeError):
                 return None
-            return {"source": "store_history", "text": entry.text, "target": entry.target, "commit": rev}
+            exact, cue = entry.views()
+            return {"source": "store_history", "text": entry.body, "target": (exact or cue).target, "commit": rev}
     return None
 
 

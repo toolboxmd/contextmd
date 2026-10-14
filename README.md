@@ -13,9 +13,62 @@ store check and the hook installer. Sessions outside Chromeria are not served.
 Requirements: Python 3.12, `curl`, and a Chromeria build with the serving
 module.
 
+### Library entries
+
+A Library is one flat folder, with one Markdown file per entry. A joined
+Chromeria thread discovers its checkout's `library/`, including when the
+project is registered at a subdirectory or the thread uses a worktree.
+A non-Git project uses its registered directory. The hook's cwd does not
+choose the Library. Registered `exact_keys` and `cue` folders are also flat;
+subfolders and `README.md` are skipped.
+
+The header chooses exact-key serving (`command`, `path` or `error`), Cue
+serving (`name` and `applies`), or both. The body holds the knowledge.
+`docs/`, `GLOSSARY.md` and ADRs stay where they are; `target` can reference
+one of those records, relative to the entry or with a leading `~/`.
+
+New headers use a YAML 1.2 subset: plain strings, single-quoted strings,
+JSON-style double-quoted strings, and one-line flow string lists for keys
+(for example, `command: [git push, git fetch]`). Quote values containing
+`: `, starting with a YAML indicator such as `*`, or looking like a number
+or boolean. `must-know-before` takes a boolean. Repeated or unknown fields,
+empty values, block lists, nested collections, anchors, tags, multiline
+scalars and trailing comments are rejected. Command keys need at least one
+word; error keys cannot consist only of whitespace. Validate new entries independently
+of registered-store compatibility:
+
+```sh
+bin/contextmd-serve check --entry library/example.md
+bin/contextmd-serve check --project /path/to/project
+```
+
+Both commands list errors with the file and reason and exit 1 on errors.
+The first validates strictly, without reading serving configuration. The
+second checks that project's discovered Library and configured Libraries.
+Project entries load first; ids are unique per matcher, and an incoming
+entry with both matchers is rejected wholly on either collision.
+
+Bodies up to 1,800 UTF-8 bytes are served whole when the harness has room;
+optional Cue display text shrinks first. Longer bodies remain in the file
+and serve as `Read <entry file> in full.` An authored `target` is also named
+when the body is omitted. A tight deny limit can require the same self-read
+for a short body. If even a complete read instruction cannot fit, the log
+records `cut_budget`.
+
+During the reader transition, registered folders temporarily tolerate
+repeated key fields and legacy unquoted colon text, reported in `legacy`.
+Legacy warnings alone do not fail the store check. Project Libraries and
+`check --entry` stay strict. While any intended reader of a shared Library
+runs an older build, writers keep the old form: plain values, one matcher's
+fields and a body at most 1,800 bytes, validated by the store check. Old
+readers can misresolve quoted targets and cannot serve mixed headers,
+flow lists or long bodies. Switch shared writers to strict YAML only after
+every intended reader upgrades; then convert legacy files and retire the
+temporary serving tolerance. Historical serve cards keep reading old bytes.
+
 ### Exact-key entries
 
-Each entry is one Markdown file in a store directory:
+For example:
 
 ```markdown
 ---
@@ -41,27 +94,27 @@ Answer every prompt of the PR template before opening a PR.
   because agents often run `cmd; echo "exit=$?"`, so the call itself succeeds,
   and Codex reports no failure at all. A printed non-zero exit (`exit=1`,
   `exit code 2`) also marks the call failed.
-- `target` (must-know-before entries only) makes a pointer rule: the deny names
+- `target` on a short must-know-before entry makes a pointer rule: the deny names
   that file, relative to the entry, and the rule lifts once the agent is seen
-  reading it. Without `target` the rule text is in the deny itself.
-- Keys may repeat; any one match serves the entry. The body must stay under
-  1,800 UTF-8 bytes, because Claude Code shows only a 2 KB preview of larger
-  hook context.
-- `id` defaults to the file name and must stay within 120 characters.
+  reading it in full. Without `target` a short rule that fits is in the deny
+  itself.
+- Keys take a string or a non-empty flow string list; any one match serves
+  the entry.
+- `id` defaults to the file name without `.md` and must stay within 120
+  Unicode code points.
 - The entry version is a hash of the file, so an edited entry counts as new.
 
 ### Cue entries
 
 Cue serves knowledge whose moment has no trigger words, such as a research
 procedure that applies whenever a request asks for facts beyond what is at
-hand. Each Cue entry is one Markdown file in a Cue directory, which must not
-lie inside an exact-key directory (each loader rejects the other's fields):
+hand. Cue entries share the same flat Library as exact-key entries:
 
 ```markdown
 ---
 id: agentsmd-research
 name: Research
-applies: The request asks a question whose answer is facts beyond what is at hand. Not: ...
+applies: 'The request asks a question whose answer is facts beyond what is at hand. Not: ...'
 target: ../skills/operations/procedures/research/index.md
 ---
 AgentsMD: follow the research procedure.
@@ -70,7 +123,7 @@ AgentsMD: follow the research procedure.
 - Cue scores `<name>: <applies>`, so those texts must match what the deployed
   adapter was trained on; edit them only together with retraining (#4).
 - An entry that scores at or above the adapter's threshold is served with its
-  `applies` line first (cut at 600 characters), so the agent can dismiss a
+  `applies` line first (at most 600 code points), so the agent can dismiss a
   wrong fire in one read, then the body and "Read `<target>` in full."
 - `target` is optional and relative to the entry. The body, `id` and version
   follow the exact-key rules.
@@ -83,7 +136,7 @@ AgentsMD: follow the research procedure.
 | --- | --- |
 | Session start | The session-start files, outside the turn budgets (Claude Code). After compaction or `/clear` a new context epoch starts and they are served again. |
 | User message | A new Chromeria run is a new turn: an 8,000-byte serve budget and a 2,000-byte deny budget. Cue scores the conversation and its fires are served at once (on Grok, at the next `PreToolUse`). |
-| Before a tool call | A matching must-know-before entry denies the call. A pointer rule keeps denying until the agent reads its target in this session and context epoch; an inline rule lifts once the model was shown it whole. After 3 denies without that, the next call passes, logged `not_read_capped`. One deny carries every whole rule that fits; the rest deny their next matching call. |
+| Before a tool call | A matching must-know-before entry denies the call. A record-pointer rule keeps denying until a full read of its target in this session and context epoch; an entry self-pointer needs a full read after that version's first deny. An inline rule lifts once the model was shown it whole. After 3 denies without that, the next call passes, logged `not_read_capped`. One deny carries every whole rule that fits; the rest deny their next matching call. |
 | Tool result or failure | Other matching entries and the Cue fires, first fit within the serve budget and 2,000 bytes per output. On Grok, which discards this output, they are printed at the next `PreToolUse`. |
 | Before done | Logged only. |
 
@@ -118,9 +171,10 @@ The stores and session-start files are named in `~/.config/contextmd/serving.jso
 }
 ```
 
-Cue is off unless both `cue` and `cue_url` are set. Add them only once every
-Chromeria server reading the file has the Cue lane: an older server rejects a
-config with unknown keys and then serves nothing.
+Cue runs when `cue_url` is set and a loaded Library has Cue entries; those
+entries may come from the project's conventional Library or either configured
+list. Add Cue configuration only once every Chromeria reader supports it:
+an older server rejects unknown config keys and then serves nothing.
 
 Install the hook per harness for the Chromeria base directory:
 
@@ -279,6 +333,12 @@ command. Cards hold transcript text, so keep them on the machine.
 Run the tests with `python3 -m unittest discover -s tests -t .`. The contract
 suite in `tests/test_contract.py` runs the real hook against a Chromeria dev
 server when `CONTEXTMD_CHROMERIA` names a Chromeria checkout.
+The standalone Library test compares the shared corpus copies without
+starting a server:
+
+```sh
+CONTEXTMD_CHROMERIA=/path/to/chromeria python3 -B -m unittest tests.test_library
+```
 
 ## Cue service
 

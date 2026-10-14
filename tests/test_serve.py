@@ -485,8 +485,9 @@ class StoreTest(unittest.TestCase):
             entry(d, "big", "x" * (store.MAX_ENTRY_BYTES + 1), command="ls")
             (Path(d) / "README.md").write_text("not an entry")
             st = store.load([d])
-            self.assertEqual([e.id for e in st.entries], ["good"])
-            self.assertEqual(len(st.errors), 2)
+            self.assertEqual([e.id for e in st.entries], ["big", "good"])
+            self.assertTrue(st.entries[0].long)
+            self.assertIn("no command, path or error key", st.errors[0])
 
     def test_long_entry_id_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
@@ -513,12 +514,13 @@ class TargetTest(unittest.TestCase):
             e = store.parse(p)
             self.assertEqual(e.target, os.path.realpath(Path(d) / "procedures" / "vc.md"))
 
-    def test_target_needs_must_know_before(self):
+    def test_context_entry_can_point_to_a_record(self):
         with tempfile.TemporaryDirectory() as d:
             entry(d, "vc", "Read it.", command="git push", target="x.md")
             st = store.load([d])
-            self.assertEqual(st.entries, [])
-            self.assertIn("target is only for must-know-before entries", st.errors[0])
+            self.assertEqual(st.errors, [])
+            self.assertEqual(st.entries[0].target, str(Path(d) / "x.md"))
+            self.assertFalse(st.entries[0].must_know_before)
 
 
 def cue_entry(directory, file, body, **fields):
@@ -550,22 +552,24 @@ class CueStoreTest(unittest.TestCase):
             cue_entry(d, "noname", "Body.", applies="When.")
             cue_entry(d, "noapplies", "Body.", name="X")
             cue_entry(d, "exactkey", "Body.", name="X", applies="When.", command="git push")
+            cue_entry(d, "unknown", "Body.", name="X", applies="When.", invented="no")
             cue_entry(d, "empty", "", name="X", applies="When.")
             cue_entry(d, "big", "x" * (store.MAX_ENTRY_BYTES + 1), name="X", applies="When.")
             cue_entry(d, "zdup", "Body.", id="good", name="Dup", applies="When.")
             st = store.load_cue([d])
-            self.assertEqual([e.id for e in st.entries], ["good"])
+            self.assertEqual([e.id for e in st.entries], ["big", "exactkey", "good"])
+            self.assertTrue(st.entries[0].long)
             reasons = " | ".join(st.errors)
-            for want in ("no name", "no applies", "unknown fields: ['command']", "empty body",
-                         "UTF-8 bytes, over", "already used"):
+            for want in ("no name", "no applies", "unknown fields: ['invented']", "empty body", "already used"):
                 self.assertIn(want, reasons)
 
-    def test_exact_key_loader_still_rejects_cue_fields(self):
+    def test_cue_only_entry_has_no_exact_keys_and_no_cross_loader_error(self):
         with tempfile.TemporaryDirectory() as d:
             cue_entry(d, "cue", "Body.", name="X", applies="When.")
             st = store.load([d])
             self.assertEqual(st.entries, [])
-            self.assertIn("unknown fields", st.errors[0])
+            self.assertEqual(st.errors, [])
+            self.assertEqual([e.id for e in st.cue], ["cue"])
 
     def test_check_reports_both_lists(self):
         with tempfile.TemporaryDirectory() as d:

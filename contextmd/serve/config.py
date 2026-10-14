@@ -6,7 +6,7 @@ Keys, all optional:
 - ``exact_keys``: store directories (default ``~/.local/share/contextmd/exact-keys``)
 - ``session_start``: files served at session start and after compaction, each
   ``{"path": ..., "max_chars": ...}``; they sit outside the turn budgets
-- ``cue``: Cue entry directories (default none), never inside an ``exact_keys`` directory
+- ``cue``: registered Library directories (default none); header fields choose each entry's matchers
 - ``cue_url``: the Cue service, such as ``http://100.116.0.2:8710``; without it Cue is off
 
 Serving state (budgets, deny state, the log) lives in the Chromeria serving module.

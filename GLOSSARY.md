@@ -9,8 +9,8 @@ once in Chromeria's system glossary,
 ## Serving
 
 **Entry**:
-One Markdown file in an entry directory that ContextMD can serve: its keys and
-a body.
+One Markdown file in a flat Library, with a valid YAML header choosing
+exact-key serving, Cue serving or both, and a body holding the knowledge.
 Its version is a hash of the file, so an edited entry counts as new.
 
 **Matcher**:
