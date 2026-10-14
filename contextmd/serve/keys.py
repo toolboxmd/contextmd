@@ -51,15 +51,84 @@ def words(command: str) -> list[str]:
     return [w for w in WORD_BREAK.split(command) if w]
 
 
-HEREDOC_START = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1")
-# An escaped ``\$(`` or backtick is literal text, not a substitution.
-SUBSTITUTION = re.compile(r"(?<!\\)\$\(([^()]*)\)|(?<!\\)`([^`]*)`")
+HEREDOC_START = re.compile(r"<<(-?)[ \t]*(['\"]?)(\w+)\2")
 SEPARATOR = re.compile(r"(?:^|[;&|(\n]|\$\()[ \t]*\S*$")
 SHELLS = {"sh", "bash", "zsh", "dash"}
 
 
+def _quoted_end(text: str, start: int) -> int:
+    """A quote inside an expansion belongs to that expansion, not the enclosing string."""
+    quote, i = text[start], start + 1
+    while i < len(text):
+        if text[i] == quote:
+            return i
+        if quote == '"' and text[i] == "\\":
+            i += 2
+            continue
+        expansion = _expansion_at(text, i) if quote == '"' else None
+        i = expansion[1] if expansion else i + 1
+    return i
+
+
+def _expansion_end(text: str, start: int, close: str) -> int:
+    """Find a balanced expansion boundary, ignoring delimiters in quotes or nested expansions."""
+    i, depth = start, 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if depth == 0 and text.startswith(close, i):
+            return i
+        # Legacy backtick boundaries are found before the body is parsed as shell code.
+        if close == "`":
+            i += 1
+            continue
+        if ch in "'\"":
+            i = _quoted_end(text, i) + 1
+            continue
+        expansion = _expansion_at(text, i)
+        if expansion:
+            i = expansion[1]
+            continue
+        if ch == ("{" if close == "}" else "("):
+            depth += 1
+        elif depth > 0 and ch == close[0]:
+            depth -= 1
+        i += 1
+    return len(text)
+
+
+def _expansion_at(text: str, start: int) -> tuple[str, int, bool] | None:
+    backtick = text.startswith("`", start)
+    arithmetic = text.startswith("$((", start)
+    parameter = text.startswith("${", start)
+    if not backtick and not parameter and not text.startswith("$(", start):
+        return None
+    width = 1 if backtick else 3 if arithmetic else 2
+    close = "`" if backtick else "}" if parameter else "))" if arithmetic else ")"
+    stop = _expansion_end(text, start + width, close)
+    body = text[start + width:stop]
+    # Backticks remove one escape layer before the shell reads their command body.
+    if backtick:
+        body = re.sub(r"\\([$`\\])", r"\1", body)
+    return body, min(stop + len(close), len(text)), not arithmetic and not parameter
+
+
 def _substitutions(text: str) -> str:
-    return " ; ".join(visible_command(a or b) for a, b in SUBSTITUTION.findall(text))
+    """Keep executable substitutions in expanded data; skip escape pairs to preserve parity."""
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        expansion = _expansion_at(text, i)
+        if not expansion:
+            i += 1
+            continue
+        body, i, command = expansion
+        out.append(visible_command(body) if command else _substitutions(body))
+    return " ; ".join(out)
 
 
 def visible_command(command: str) -> str:
@@ -70,17 +139,23 @@ def visible_command(command: str) -> str:
     text, out, i, heredocs = command, "", 0, []
     while i < len(text):
         ch = text[i]
+        if text.startswith("<<<", i):
+            # A here-string has an argument, not a body on following lines.
+            out += "<<<"
+            i += 3
+            continue
         opening = HEREDOC_START.match(text, i) if text.startswith("<<", i) and not text.startswith("<<<", i) else None
         if opening:
-            heredocs.append((opening.group(2), opening.group(1) == ""))
+            heredocs.append((opening.group(3), opening.group(2) == "", opening.group(1) == "-"))
             out += " "
             i = opening.end()
             continue
         if ch == "\n" and heredocs:
             j, kept = i + 1, ""
-            for word, expands in heredocs:
+            for word, expands, strip_tabs in heredocs:
                 # Search the body itself, so ``^`` anchors at its start (an empty heredoc).
-                end = re.compile(rf"(^|\n)[ \t]*{word}[ \t]*(?=\n|$)").search(text[j:])
+                tabs = r"\t*" if strip_tabs else ""
+                end = re.compile(rf"(^|\n){tabs}{word}(?=\n|$)").search(text[j:])
                 body_end = j + end.start() if end else len(text)
                 if expands:
                     kept += f" {_substitutions(text[j:body_end])} "
@@ -93,13 +168,15 @@ def visible_command(command: str) -> str:
             out += text[i:i + 2]
             i += 2
             continue
+        if ch == "`" or (text.startswith("$(", i) and not text.startswith("$((", i)):
+            body, i, _ = _expansion_at(text, i)
+            out += f" {visible_command(body)} "
+            continue
         if ch not in "'\"":
             out += ch
             i += 1
             continue
-        j = i + 1
-        while j < len(text) and text[j] != ch:
-            j += 2 if ch == '"' and text[j] == "\\" else 1
+        j = _quoted_end(text, i)
         body = text[i + 1:j]
         before = out.rstrip().split()
         shell = before[-2].rsplit("/", 1)[-1] if len(before) >= 2 else ""

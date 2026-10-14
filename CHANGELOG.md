@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.2] - 2026-10-14
+
+### Changed
+
+- Command keys follow shell execution with nested substitutions, escape parity and exact heredocs (toolboxmd/chromeria#232).
+
 ## [0.6.1] - 2026-10-14
 
 ### Changed

@@ -57,10 +57,24 @@ class SegmentsTest(unittest.TestCase):
                         'echo "\\$(gh pr create)"', 'echo "\\`gh pr create\\`"', "cat <<EOF\nrun gh pr create later\nEOF"]:
             self.assertFalse(hit(command), command)
         db = lambda command: hit(command, "chromeria-v2.sqlite")
-        for command in ["sqlite3 chromeria-v2.sqlite .tables", "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
+        for command in ["sqlite3 chromeria-v2.sqlite .tables", "sqlite3 ~/.t3/userdata/chromeria-v2.sqlite",
+                        "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite", "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
                         "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite 'select 1'"]:
             self.assertTrue(db(command), command)
         self.assertFalse(db('sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables'))
+        # Neither URI hits the bare command key: the basename includes ?mode=ro.
+        for command in [
+            "sqlite3 'file:/Users/u/.t3/userdata/chromeria-v2.sqlite?mode=ro'",
+            "sqlite3 file:/Users/u/.t3/userdata/chromeria-v2.sqlite?mode=ro",
+        ]:
+            self.assertFalse(db(command), command)
+        # Live bake mentions: candidate 1672 edits a test; 26379 writes an Issue body.
+        for command in [
+            "python3 - <<'EOF'\nfrom pathlib import Path\np = Path('tests/test_serve.py')\np.write_text(p.read_text().replace('state.sqlite', 'chromeria-v2.sqlite'))\nEOF",
+            "gh issue create --title \"Record the bake\" --body-file - <<'EOF'\nThe entry names chromeria-v2.sqlite in a test fixture.\nEOF",
+            "gh issue create --title \"Record the bake\" --body \"The entry names chromeria-v2.sqlite in a test fixture.\"",
+        ]:
+            self.assertFalse(db(command), command)
 
     def test_command_after_an_empty_heredoc_still_matches(self):
         # Sol review of #52: the terminator right at the body's start must end the heredoc.
@@ -72,6 +86,91 @@ class SegmentsTest(unittest.TestCase):
                         "cat <<'A'\nA\ncat <<'B'\nB\ngh pr create"]:
             self.assertTrue(hit(command), command)
         self.assertFalse(hit("cat <<'A'\nA\ncat <<'B'\ngh pr create\nB"))
+
+    def test_substitution_boundaries_keep_inner_quotes_and_nested_bodies(self):
+        runs = [
+            "echo \"$(gh pr create --title \"hello\")\"",
+            "echo \"$(gh pr create $(printf x))\"",
+            "echo \"$(gh pr create \"$(printf x)\")\"",
+            "echo $(gh pr create --title \"hello\")",
+            "echo \"`gh pr create --title \"hello\"`\"",
+            "echo \"`printf \"%s\" \\`gh pr create\\``\"",
+            "cat <<EOF\n$(gh pr create --title \"hello\" $(printf x))\nEOF",
+        ]
+        mentions = [
+            "echo '$(gh pr create)'",
+            "echo \"$(printf \"%s\" \"gh pr create\")\"",
+            "echo \"`printf \"%s\" \"gh pr create\"`\"",
+            "echo \"$(printf \"%s\" \"$(printf \"%s\" \"gh pr create\")\")\"",
+            "cat <<'EOF'\n$(gh pr create --title \"hello\" $(printf x))\nEOF",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_substitution_escapes_use_backslash_parity(self):
+        # Two/four literal backslashes run; one/three leave the operator literal.
+        runs = [
+            "echo \"\\\\$(gh pr create)\"",
+            "echo \"\\\\\\\\$(gh pr create)\"",
+            "cat <<EOF\n\\\\$(gh pr create)\nEOF",
+            "cat <<EOF\n\\\\\\\\$(gh pr create)\nEOF",
+            "echo \"\\\\`gh pr create`\"",
+            "cat <<EOF\n\\\\`gh pr create`\nEOF",
+        ]
+        mentions = [
+            "echo \"\\$(gh pr create)\"",
+            "echo \"\\\\\\$(gh pr create)\"",
+            "cat <<EOF\n\\$(gh pr create)\nEOF",
+            "cat <<EOF\n\\\\\\$(gh pr create)\nEOF",
+            "echo \"\\`gh pr create\\`\"",
+            "cat <<EOF\n\\`gh pr create\\`\nEOF",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_heredoc_terminators_are_exact_except_leading_tabs_for_strip(self):
+        runs = [
+            "cat <<'EOF'\nEOF\ngh pr create",
+            "cat <<EOF\nEOF\ngh pr create",
+            "cat <<-'EOF'\n\tEOF\ngh pr create",
+            "cat <<-EOF\n\tEOF\ngh pr create",
+            "cat <<A <<'B'\nA\nB\ngh pr create",
+            "cat <<'A'\nA\ncat <<'B'\nB\ngh pr create",
+        ]
+        mentions = [
+            "cat <<'EOF'\n EOF\ngh pr create\nEOF",
+            "cat <<'EOF'\n\tEOF\ngh pr create\nEOF",
+            "cat <<'EOF'\nEOF \ngh pr create\nEOF",
+            "cat <<'EOF'\nEOF\t\ngh pr create\nEOF",
+            "cat <<-'EOF'\n EOF\ngh pr create\nEOF",
+            "cat <<-'EOF'\n\tEOF \ngh pr create\nEOF",
+            "cat <<'EOF'\nEOFX\ngh pr create\nEOF",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_here_strings_and_arithmetic_or_parameter_boundaries(self):
+        runs = [
+            "cat <<<EOF\ngh pr create",
+            "echo \"$(gh pr create $((1 + (2))))\"",
+            "echo \"$(gh pr create ${v:-\")\"})\"",
+            "echo \"$((1 + $(gh pr create)0))\"",
+            "echo \"${v:-$(gh pr create --title \"hello\")}\"",
+            "cat <<EOF\n$((1 + $(gh pr create)0))\nEOF",
+        ]
+        mentions = [
+            "cat <<<\"gh pr create\"",
+            "echo \"$((1 + (2))) gh pr create\"",
+            "echo \"${v:-gh pr create}\"",
+            "echo \"$(printf \"%s\" \"${v:-gh pr create}\")\"",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def assert_command_cases(self, runs, mentions):
+        # Same fixtures as Chromeria, with /bin/bash and a PATH-local gh stub as the oracle.
+        e = store.Entry("e", "v", "t", commands=[["gh", "pr", "create"]])
+        for commands, expected in ((runs, True), (mentions, False)):
+            for command in commands:
+                with self.subTest(command=command):
+                    hit = e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+                    self.assertEqual(hit, expected)
 
     def test_path_key_matches_files_a_shell_command_names(self):
         # As Chromeria's Matcher.ts (toolboxmd/chromeria#234).
