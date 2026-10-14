@@ -57,7 +57,7 @@ flowchart TD
     CU["5 Cue lane: scoring service and Chromeria lane"]
     %% CU: PR #36 #13 toolboxmd/chromeria PR #227
     GL["Great Library pointer and registration on every machine"]
-    %% GL: #34
+    %% GL: #34 toolboxmd/chromeria#311
     SR["6 Serve evidence report"]
     %% SR: PR #38 #15
     SC["6 Serve card and label prompt"]

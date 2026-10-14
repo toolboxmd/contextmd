@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@opencode-ai/sdk": "1.19.0"
+  }
+}
