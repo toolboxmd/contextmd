@@ -59,9 +59,9 @@ flowchart TD
     GL["Great Library pointer and registration on every machine"]
     %% GL: #34 #74 toolboxmd/chromeria#311
     SR["6 Serve evidence report"]
-    %% SR: PR #38 #15
+    %% SR: PR #38 PR #75 #15
     SC["6 Serve card and label prompt"]
-    %% SC: PR #45 #15
+    %% SC: PR #45 PR #75 #15
     LJ["6 Labeler judge runs"]
     %% LJ: #15
     RP["7 Twice-weekly report"]
@@ -71,7 +71,7 @@ flowchart TD
     WF["Cue input window format"]
     %% WF: #20
     SP["Per-row proof that a serve was shown"]
-    %% SP: toolboxmd/chromeria#245
+    %% SP: toolboxmd/chromeria#245 PR #75
     CK["Command keys fire on runs, not mentions"]
     %% CK: toolboxmd/chromeria#232 toolboxmd/chromeria#284
     RD["Readers called by path; OpenCode reservations"]

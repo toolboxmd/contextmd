@@ -1,3 +1,4 @@
+import copy
 import json
 import re
 import subprocess
@@ -124,6 +125,11 @@ class CardTest(unittest.TestCase):
         self.event(504, "tool_call", 1004.0, tool="Bash", input={"command": "echo after"}, result="after")
         return n
 
+    def prove(self, candidate, **consumed):
+        ev = copy.deepcopy(fixture.CLAUDE_SHOWN)
+        ev["consumed"].update(consumed)
+        self.log.native_fact(candidate, json.dumps(ev))
+
     def test_the_card_holds_the_rule_as_served_and_the_window_up_to_the_next_message(self):
         text = self.card(self.window_case()).stdout
         head, _, rest = text.partition("\n\n")
@@ -164,7 +170,7 @@ class CardTest(unittest.TestCase):
         self.assertEqual(len(cut["events"]), 60)
         self.assertIsNone(cut["no_evidence"])  # the events it shows are evidence
         self.assertEqual(cut["allowed_labels"], ["irrelevant", "wrong", "followed"])  # unproven: no ignored
-        self.assertIn("ignored", card.allowed_labels({**cut, "shown": "yes"}))
+        self.assertNotIn("ignored", card.allowed_labels({**cut, "shown": "yes"}))  # the flag alone is not receipt
         verdict = {"candidate": n, "governed_action": None, "events": [600], "reason": "x"}
         with self.assertRaises(card.LabelError):  # the action may sit past the cut
             card.check_label(cut, {**verdict, "label": "no_governed_action"})
@@ -249,8 +255,73 @@ class CardTest(unittest.TestCase):
         with self.assertRaises(card.LabelError):
             card.check_label(unproven, breach)
         card.check_label(unproven, {**breach, "label": None})  # a breach nobody proved was seen: unlabeled
-        self.assertIn("ignored", card.allowed_labels({**unproven, "shown": "yes"}))
+        self.assertNotIn("ignored", card.allowed_labels({**unproven, "shown": "yes"}))
         self.assertNotIn("ignored", card.allowed_labels({**unproven, "shown": "no"}))
+
+    def test_native_consumption_marks_actions_before_and_after_the_model_received_context(self):
+        from contextmd.serve import card
+        n = self.window_case()
+        self.prove(n)
+        shown = json.loads(self.card(n, "--json").stdout)
+        self.assertEqual(shown["shown"], "yes")
+        with self.assertRaises(card.LabelError):
+            card.check_label(shown, {"candidate": n, "label": "ignored", "governed_action": 500})
+        self.assertEqual(shown["shown_source"], "claude_request_replay")
+        self.assertEqual(shown["shown_request"], "request-1")
+        self.assertEqual(shown["consumed"]["at"], 1001.0)
+        self.assertEqual([(e["id"], e.get("after_consumption")) for e in shown["events"] if e["role"] != "message"],
+                         [(500, False), (502, False), (503, True)])
+        self.assertIn("ignored", shown["allowed_labels"])
+        for action in (500, 502, None, "u2", [], {}):
+            with self.subTest(action=action), self.assertRaises(card.LabelError):
+                card.check_label(shown, {"candidate": n, "label": "ignored", "governed_action": action,
+                                        "events": [action], "reason": "breach"})
+        card.check_label(shown, {"candidate": n, "label": "ignored", "governed_action": 503,
+                                "events": [503], "reason": "breach"})
+        text = self.card(n).stdout
+        self.assertIn("first response output after the model received the serve", text)
+        self.assertIn("[503] after consumption", text)
+        self.assertIn("claude_request_replay", text)
+        self.assertIn("request-1", text)
+
+    def test_only_the_exact_consuming_native_call_can_count_at_a_time_tie(self):
+        from contextmd.serve import card
+        n, tool = self.served()
+        self.event(500, "tool_call", 999.0, native_id=tool)
+        self.event(1, "tool_call", 1001.0, native_id="toolu_received")
+        self.event(502, "tool_call", 1001.0, native_id="toolu_other")
+        self.message("end", 1002.0, "done")
+        self.prove(n)
+        shown = json.loads(self.card(n, "--json").stdout)
+        self.assertEqual({e["id"]: e.get("after_consumption") for e in shown["events"] if e["role"] == "after"},
+                         {1: True, 502: False})
+        card.check_label(shown, {"candidate": n, "label": "ignored", "governed_action": 1})
+        for action in (502, True, "1"):
+            with self.subTest(action=action), self.assertRaises(card.LabelError):
+                card.check_label(shown, {"candidate": n, "label": "ignored", "governed_action": action})
+
+    def test_a_window_ending_before_consumption_withholds_ignored(self):
+        n = self.window_case()
+        self.prove(n, at=1002.75, call=None)
+        shown = json.loads(self.card(n, "--json").stdout)
+        self.assertEqual(shown["shown"], "yes")
+        self.assertNotIn("ignored", shown["allowed_labels"])
+
+    def test_malformed_or_unsupported_receipt_never_unlocks_the_card(self):
+        from contextmd.serve import card
+        n = self.window_case()
+        for ev in ([], {**fixture.CLAUDE_SHOWN, "source": None},
+                   {**fixture.CLAUDE_SHOWN, "source": "codex_rollout"},
+                   {**fixture.CLAUDE_SHOWN, "consumed": {"id": "msg-1", "at": 1001}}):
+            self.log.native_fact(n, json.dumps(ev))
+            unproven = json.loads(self.card(n, "--json").stdout)
+            self.assertEqual(unproven["shown"], "unproven")
+            self.assertIsNone(unproven["consumed"])
+            self.assertNotIn("ignored", unproven["allowed_labels"])
+            with self.assertRaises(card.LabelError):
+                card.check_label(unproven, {"candidate": n, "label": "ignored", "governed_action": 503})
+        self.log.native_fact(n, '{"v":1,"source":null,"reason":"request_unverifiable"}', fact="unknown")
+        self.assertIn("request_unverifiable", self.card(n).stdout)
 
     def test_a_shown_deny_allows_ignored(self):
         from contextmd.serve import card

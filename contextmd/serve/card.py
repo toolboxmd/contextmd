@@ -44,8 +44,10 @@ def allowed_labels(card: dict) -> list[str]:
     if card.get("no_evidence"):
         return []
     cut = (card.get("window") or {}).get("end") == "cap"
+    after = any(e.get("after_consumption") for e in card["events"] if e["role"] == "after")
+    ignorable = card.get("shown") == "yes" and (card["seam"] == "deny" or (card.get("consumed") and after))
     return [label for label in LABELS
-            if (label != "ignored" or card.get("shown") == "yes")
+            if (label != "ignored" or ignorable)
             and (label != "no_governed_action" or not cut)]
 
 
@@ -57,6 +59,11 @@ def check_label(card: dict, verdict: dict) -> None:
     if label is not None and label not in allowed_labels(card):
         raise LabelError(f"label {label!r} is not allowed on card {card['candidate']}"
                          f" (shown {card.get('shown')}, no_evidence {card.get('no_evidence')})")
+    if label == "ignored" and card["seam"] != "deny":
+        action = verdict.get("governed_action")
+        eligible = [e["id"] for e in card["events"] if e.get("after_consumption")]
+        if not any(type(action) is type(eid) and action == eid for eid in eligible):
+            raise LabelError("ignored must cite a governed action after the model received the serve")
 
 
 def _event_details(command: str, ledger: Path, ids: list[int]) -> dict:
@@ -195,24 +202,35 @@ def window(observer: report.Observer, command: str, row: dict) -> tuple[list[dic
         after, end, message = after[:WINDOW_CAP - 1], "cap", None
     details = _event_details(command, observer.ledger,
                              [e["id"] for e in [trigger, *after] if e["family"] == "tool_call"])
-    out = [_event(trigger, details, "trigger")] + [_event(e, details, "after") for e in after]
+    consumed = row.get("consumed")  # report.rows validated this value before serializing it
+    out = [_event(trigger, details, "trigger", consumed)] + [_event(e, details, "after", consumed) for e in after]
     if message:
         out.append({"id": message["native_id"], "role": "message", "kind": message["kind"],
                     "text": _short(message["text_excerpt"] or "")})
     return out, end
 
 
-def _event(e: dict, details: dict, role: str) -> dict:
+def after_consumption(event: dict, consumed: dict) -> bool:
+    at = report._seconds(event.get("ts"))
+    ids = {consumed["id"]} | ({consumed["call"]} if consumed.get("call") else set())
+    return (at is not None and at > consumed["at"]) or event.get("native_id") in ids
+
+
+def _event(e: dict, details: dict, role: str, consumed: dict | None = None) -> dict:
     d = details.get(e["id"], {})
     if e["family"] == "tool_call":
         tool = d.get("tool") or e.get("name")
         given = d.get("input") or {}
         call = given.get("command") if isinstance(given, dict) and "command" in given else given
-        return {"id": e["id"], "role": role, "kind": "tool", "tool": tool, "input": _short(call),
-                "status": d.get("status"), "result": _short(d.get("result") or "")}
-    if e["family"] == "assistant_message":
-        return {"id": e["id"], "role": role, "kind": "says", "text": _short((e.get("detail") or {}).get("excerpt", ""))}
-    return {"id": e["id"], "role": role, "kind": e["family"], "text": _short(e.get("name") or e.get("target") or "")}
+        result = {"id": e["id"], "role": role, "kind": "tool", "tool": tool, "input": _short(call),
+                  "status": d.get("status"), "result": _short(d.get("result") or "")}
+    elif e["family"] == "assistant_message":
+        result = {"id": e["id"], "role": role, "kind": "says", "text": _short((e.get("detail") or {}).get("excerpt", ""))}
+    else:
+        result = {"id": e["id"], "role": role, "kind": e["family"], "text": _short(e.get("name") or e.get("target") or "")}
+    if consumed:
+        result["after_consumption"] = after_consumption(e, consumed)
+    return result
 
 
 def build(db_path: Path, observer: report.Observer, candidate: int, command: str = "agent-observer") -> dict:
@@ -234,6 +252,7 @@ def build(db_path: Path, observer: report.Observer, candidate: int, command: str
             "harness": row["harness"], "seam": row["seam"], "moment": row["moment"], "shown": row["shown"],
             "lift": row["lift"], "late": row["late"], "evidence": row["evidence"], "rule": rule,
             "window": {"end": end, "events": len(events)}, "events": events, "no_evidence": no_evidence}
+    built.update({key: row[key] for key in ("consumed", "shown_source", "shown_request", "shown_reason")})
     built["allowed_labels"] = allowed_labels(built)
     return built
 
@@ -262,6 +281,13 @@ ENDS = {"next_message": "ends at the next message", "end_of_record": "ends where
 def render(card: dict) -> str:
     trigger = next((e for e in card["events"] if e["role"] == "trigger"), None)
     call = f"a {trigger['tool']} call" if trigger else "a call"
+    proof = ""
+    if card.get("consumed"):
+        proof = (f" Native proof: {card['shown_source']}"
+                 + (f", request {card['shown_request']}" if card.get("shown_request") else "")
+                 + f"; first response output after the model received the serve at {card['consumed']['at']}.")
+    elif card.get("shown_reason"):
+        proof = f" Receipt: {card['shown_reason']}."
     lines = [
         f"# Serve card {card['candidate']}",
         f"What happened: `{card['entry']}` was served as {SEAMS.get(card['seam'], card['seam'])} {call} on "
@@ -270,7 +296,7 @@ def render(card: dict) -> str:
         "or show it was wrong or did not apply.",
         f"Facts: key `{card['key']}`; lift {card['lift'] or 'none'}; late {'yes' if card['late'] else 'no'}; "
         + (f"No evidence: {card['no_evidence']}." if card["no_evidence"]
-           else f"{card['window']['events']} events, {ENDS[card['window']['end']]}."),
+           else f"{card['window']['events']} events, {ENDS[card['window']['end']]}.") + proof,
         "",
         f"## Rule ({card['rule']['source']}, version {card['version']})"
         + (f"; the reply carried {card['rule']['rules_in_reply']} rules, this is one of them"
@@ -283,6 +309,8 @@ def render(card: dict) -> str:
         lines += ["", "## Events"]
         for e in card["events"]:
             mark = "trigger " if e["role"] == "trigger" else ""
+            if "after_consumption" in e:
+                mark += "after consumption " if e["after_consumption"] else "before consumption "
             if e["kind"] == "tool":
                 lines.append(f"[{e['id']}] {mark}{e['tool']}: {e['input']} -> {e['status']}: {e['result']}")
             elif e["role"] == "message":

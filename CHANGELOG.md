@@ -1,10 +1,16 @@
 # Changelog
 
-## [1.1.0] - 2026-10-14
+## [1.2.0] - 2026-10-14
 
 ### Added
 
 - Add an optional Great Library pointer and persist it in OpenCode native history
+
+## [1.1.0] - 2026-10-14
+
+### Added
+
+- Require native context receipt before ignored labels
 
 ## [1.0.0] - 2026-10-14
 
