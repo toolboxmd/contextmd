@@ -1,14 +1,8 @@
 """Exact keys from structured tool input: command words, paths and error signatures.
-
-A shell command is not parsed in general. Command keys match on the parts that
-run (``visible_command``, toolboxmd/chromeria#232): quoted strings and heredoc
-bodies are only mentions and are skipped, while ``sh -c`` strings, unescaped
-``$(...)`` and backticks inside double quotes or an unquoted-marker heredoc, and
-a quoted command word still count. The rest is cut into words at whitespace and
-shell punctuation, and a key matches where its words appear in order; the first
-word may be an executable path (``/usr/bin/git``), and an unquoted argument
-still matches a bare key. Path keys see every word (#234). Chromeria's serving
-matcher (``Matcher.ts``) follows the same rule.
+Command keys keep unquoted words and quoted words whose dequoted value has no
+whitespace, drop quoted prose and literal heredoc bodies, and scan executed
+substitutions and dequoted shell ``-c`` scripts (toolboxmd/chromeria#232).
+Chromeria's ``Matcher.ts`` follows the same rule; path keys see every raw word (#234).
 """
 
 from __future__ import annotations
@@ -54,6 +48,7 @@ def words(command: str) -> list[str]:
 # Literal markers use the same ASCII shell boundaries in both languages, including Unicode.
 HEREDOC_START = re.compile(r"""<<(-?)[ \t]*(['"]?)([^ \t\r\n;&|()<>'"\\]+)\2(?=$|[ \t\r\n;&|()<>])""")
 SHELL_BREAK = re.compile(r"[ \t\r\n;&|()<>]")
+REDIRECTION = re.compile(r"(?:[0-9]+)?(<<<|[<>][&<>|]?)")
 # Same wrappers as Chromeria's Reads.ts; separate option values are not command names.
 WRAPPERS = {"command", "exec", "nohup", "time", "env", "sudo"}
 WRAPPER_ARGUMENTS = {
@@ -147,9 +142,10 @@ def _substitutions(text: str) -> str:
     return " ; ".join(out)
 
 
-def _shell_word(text: str, start: int) -> tuple[str, str, str, int]:
+def _shell_word(text: str, start: int) -> tuple[str, str, bool, str, int]:
     """One shell word: dequote its value, retaining unquoted fragments and substitutions."""
     i, quote, value, plain, runs = start, "", "", "", []
+    quoted = False
     ansi_start = 0
     while i < len(text):
         ch = text[i]
@@ -166,11 +162,13 @@ def _shell_word(text: str, start: int) -> tuple[str, str, str, int]:
             continue
         if not quote and text.startswith("$'", i):
             quote = "$'"
+            quoted = True
             ansi_start = len(value)
             i += 2
             continue
         if not quote and ch in "'\"":
             quote = ch
+            quoted = True
             i += 1
             continue
         if ch == "\\" and quote != "'":
@@ -191,8 +189,8 @@ def _shell_word(text: str, start: int) -> tuple[str, str, str, int]:
                     value += next_char
             else:
                 value += ch + next_char
-            if not quote:
-                plain += text[i:i + 2]
+            if not quote and next_char != "\n":
+                plain += next_char
             i += 2
             continue
         expansion = _expansion_at(text, i) if quote not in ("'", "$'") else None
@@ -209,20 +207,19 @@ def _shell_word(text: str, start: int) -> tuple[str, str, str, int]:
         if not quote:
             plain += ch
         i += 1
-    return value, plain, " ; ".join(runs), i
+    return value, plain, quoted, " ; ".join(runs), i
 
 
 def visible_command(command: str) -> str:
-    """The parts of a shell command that run, for command keys (as Chromeria's ``Matcher.ts``,
-    toolboxmd/chromeria#232): quoted strings and heredoc bodies are dropped; the string after
-    ``sh -c`` runs, as do ``$(...)`` and backticks inside double quotes or an unquoted-marker
-    heredoc, unless escaped, and a quoted command after assignments or wrappers.
-    Shell script words lose their outer quote/escape layer before scanning."""
+    """Keep single quoted tokens anywhere; only quoted text with whitespace is a mention.
+    Command position is used solely to identify a shell's one dequoted ``-c`` script."""
     text, out, i, heredocs = command, "", 0, []
-    position, wrapper, option_argument, shell, redirect = "command", "", False, False, False
+    position, wrapper, option_argument, redirect = "command", "", False, False
     while i < len(text):
         ch = text[i]
-        opening = HEREDOC_START.match(text, i) if text.startswith("<<", i) and not text.startswith("<<<", i) else None
+        redirection = REDIRECTION.match(text, i)
+        operator = redirection.end() - len(redirection.group(1)) if redirection else i
+        opening = HEREDOC_START.match(text, operator) if redirection and redirection.group(1) == "<<" else None
         if opening:
             heredocs.append((opening.group(3), opening.group(2) == "", opening.group(1) == "-"))
             out += " "
@@ -246,19 +243,18 @@ def visible_command(command: str) -> str:
         if ch in " \t\r\n;&|()":
             if ch in "\n;&|()":
                 position, wrapper = "command", ""
-                option_argument = shell = redirect = False
+                option_argument = redirect = False
             out += ch
             i += 1
             continue
-        if ch in "<>":
+        if redirection:
             # A here-string consumes one word, without opening a body on following lines.
-            width = 3 if text.startswith("<<<", i) else 1
-            out += text[i:i + width]
-            i += width
+            out += redirection.group(0)
+            i = redirection.end()
             redirect = True
             continue
-        value, plain, runs, end = _shell_word(text, i)
-        kept = plain
+        value, plain, quoted, runs, end = _shell_word(text, i)
+        kept = ("" if re.search(r"\s", value) else value) if quoted else plain
         if redirect:
             redirect = False
         elif position == "script":
@@ -272,14 +268,12 @@ def visible_command(command: str) -> str:
                 if value == "--":
                     wrapper = ""
             elif not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", text[i:end]):
-                if not re.search(r"\s", value):
-                    kept = value
                 program = value.rsplit("/", 1)[-1]
                 if program in WRAPPERS:
                     wrapper = program
                 else:
-                    position, shell = "argument", program in SHELLS
-        elif shell and re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", value):
+                    position = "shell-options" if program in SHELLS else "argument"
+        elif position == "shell-options" and re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", value):
             position = "script"
         out += f" {kept} {runs} "
         i = end

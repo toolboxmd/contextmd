@@ -61,7 +61,8 @@ class SegmentsTest(unittest.TestCase):
                         "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite", "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
                         "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite 'select 1'"]:
             self.assertTrue(db(command), command)
-        self.assertFalse(db('sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables'))
+        # A quoted path without whitespace is a real file argument and matches the bare key.
+        self.assertTrue(db('sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables'))
         # Neither URI hits the bare command key: the basename includes ?mode=ro.
         for command in [
             "sqlite3 'file:/Users/u/.t3/userdata/chromeria-v2.sqlite?mode=ro'",
@@ -273,6 +274,101 @@ class SegmentsTest(unittest.TestCase):
             "bash -c $'echo \"$(printf \\'%s\\' \\'gh pr create\\')\"'",
         ]
         self.assert_command_cases(runs, mentions)
+
+    def test_quoted_single_tokens_count_in_every_word_position(self):
+        # Single quoted tokens count as arguments; this does not claim they execute gh.
+        runs = [
+            "printf '%s ' 'gh' 'pr' 'create'",
+            "echo \"gh\" pr create",
+            "echo g'h' pr create",
+            "echo g\"h\" pr create",
+            "echo $'\\x67h' pr create",
+        ]
+        mentions = [
+            "printf '%s ' 'gh pr create'",
+            "echo \"live check: gh pr create\"",
+            "echo $'gh pr create'",
+            "echo g'h pr create'",
+        ]
+        e = store.Entry("e", "v", "t", commands=["gh pr create".split()])
+        for commands, expected in ((runs, True), (mentions, False)):
+            for command in commands:
+                with self.subTest(command=command):
+                    hit = e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+                    self.assertEqual(hit, expected)
+
+    def test_numbered_redirections_preserve_shell_commands(self):
+        runs = [
+            "2>/dev/null 'gh' pr create",
+            "2>/dev/null bash -c 'gh pr create'",
+            "2>&1 env 'gh' pr create",
+            ">/dev/null 'gh' pr create",
+            "2>>/dev/null g'h' pr create",
+            "2>&1 bash -ce 'gh pr create'",
+            "3<<'EOF' bash -c 'gh pr create'\nliteral gh pr create\nEOF",
+        ]
+        mentions = [
+            "2>/dev/null printf '%s' 'gh pr create'",
+            "2>/dev/null bash -c 'echo \"gh pr create\"'",
+            "2>&1 env printf '%s' 'gh pr create'",
+            "3<<'EOF' cat\nliteral gh pr create\nEOF",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_quoted_words_after_shell_control_syntax(self):
+        runs = [
+            "if true; then 'gh' pr create; fi",
+            "! 'gh' pr create",
+            "{ 'gh' pr create; }",
+            "if false; then :; else g'h' pr create; fi",
+            "for n in 1; do \"gh\" pr create; done",
+            "time -p 'gh' pr create",
+        ]
+        mentions = [
+            "if true; then printf '%s' 'gh pr create'; fi",
+            "! printf '%s' 'gh pr create'",
+            "{ printf '%s' 'gh pr create'; }",
+            "for n in 1; do printf '%s' 'gh pr create'; done",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_shell_options_stop_after_one_script(self):
+        runs = [
+            "bash -c 'gh pr create' _ -c 'echo \"gh pr create\"'",
+            "bash -c 'echo done' _ -c \"$(gh pr create)\"",
+            "sh -c 'gh pr create' -c 'echo \"gh pr create\"'",
+        ]
+        mentions = [
+            "bash -c 'echo \"$@\"' _ -c 'gh pr create'",
+            "bash -c 'echo done' -- -c 'gh pr create'",
+            "bash -c 'echo done' -c 'gh pr create'",
+            "bash -ce 'echo done' _ -ce 'gh pr create'",
+            "sh -c 'echo done' _ -c 'gh pr create'",
+            "zsh -lc 'echo done' _ -c 'gh pr create'",
+            "bash -c $'echo done' _ -c $'gh pr create'",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_quoted_single_database_tokens_match_but_prose_does_not(self):
+        # Single quoted tokens count as arguments; this does not claim they execute gh.
+        runs = [
+            "sqlite3 'chromeria-v2.sqlite' .tables",
+            "sqlite3 \"/Users/u/.t3/userdata/chromeria-v2.sqlite\" .tables",
+            "sqlite3 $'chromeria-v2.sqlite' .tables",
+            "sqlite3 chromeria-v2'.sqlite' .tables",
+        ]
+        mentions = [
+            "echo 'the file chromeria-v2.sqlite'",
+            "echo \"open /Users/u/.t3/userdata/chromeria-v2.sqlite later\"",
+            "echo $'the file chromeria-v2.sqlite'",
+            "echo prefix' the file chromeria-v2.sqlite'",
+        ]
+        e = store.Entry("e", "v", "t", commands=["chromeria-v2.sqlite".split()])
+        for commands, expected in ((runs, True), (mentions, False)):
+            for command in commands:
+                with self.subTest(command=command):
+                    hit = e.matches(keys.extract("Bash", {"command": command}, None)) is not None
+                    self.assertEqual(hit, expected)
 
     def assert_command_cases(self, runs, mentions):
         # Same fixtures as Chromeria, with /bin/bash and a PATH-local gh stub as the oracle.
