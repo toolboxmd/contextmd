@@ -1,3 +1,4 @@
+import copy
 import json
 import sqlite3
 import subprocess
@@ -43,6 +44,12 @@ CREATE TABLE user_messages (
   ordinal_num INTEGER, ts REAL, kind TEXT NOT NULL DEFAULT 'genuine', text_hash TEXT NOT NULL,
   text_excerpt TEXT NOT NULL, is_genuine INTEGER NOT NULL);
 """
+
+CLAUDE_SHOWN = {
+    "v": 1, "source": "claude_request_replay", "checked_at": 1003.0,
+    "record": {"id": "attachment-1", "slot": 0, "at": 1000.0, "turn": None},
+    "consumed": {"id": "msg-1", "call": "toolu_received", "at": 1001.0, "request": "request-1"},
+}
 
 
 def ledger(path, version="3"):
@@ -103,6 +110,25 @@ class Log:
         self.db.commit()
         return n
 
+    def native_fact(self, candidate, raw, fact="shown"):
+        """A producer fact, joined by the moment's own delivery rather than a candidate claim."""
+        self.db.execute("""CREATE TABLE IF NOT EXISTS deliveries (delivery TEXT PRIMARY KEY, harness TEXT NOT NULL,
+            moment_id INTEGER, stage TEXT NOT NULL, status INTEGER NOT NULL, body TEXT,
+            created_at REAL NOT NULL, expires_at REAL NOT NULL)""")
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(deliveries)")}
+        for name in ("shown", "shown_json"):
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE deliveries ADD COLUMN {name} TEXT")
+        delivery, harness, moment = self.db.execute(
+            "SELECT cl.delivery, m.harness, m.id FROM claims cl JOIN candidates c ON c.id = cl.candidate_id"
+            " JOIN moments m ON m.id = c.moment_id WHERE c.id = ?", (candidate,)).fetchone()
+        self.db.execute("UPDATE moments SET delivery = ? WHERE id = ?", (delivery, moment))
+        self.db.execute("""INSERT INTO deliveries (delivery, harness, moment_id, stage, status, created_at,
+                           expires_at, shown, shown_json) VALUES (?, ?, ?, 'settled', 200, 1000, 1005, ?, ?)
+                           ON CONFLICT(delivery) DO UPDATE SET shown = excluded.shown, shown_json = excluded.shown_json""",
+                        (delivery, harness, moment, fact, raw))
+        self.db.commit()
+
 
 class ReportTest(unittest.TestCase):
     def setUp(self):
@@ -141,6 +167,95 @@ class ReportTest(unittest.TestCase):
         self.log.serve(outcome="unverified", checked="unverified", session="d")
         self.log.serve(seam="context", kind="tool_result", entry="other-fact", session="e")
         self.assertEqual([r["shown"] for r in self.rows()], ["yes", "unproven", "no", "unproven", "unproven"])
+
+    def test_native_context_proof_reaches_the_json_report(self):
+        self.log.serve(seam="context", checked="hidden")  # a claim is not the context's proof
+        self.log.native_fact(1, json.dumps(CLAUDE_SHOWN))
+        row = self.rows()[0]
+        self.assertEqual(row["shown"], "yes")
+        self.assertEqual(row["shown_source"], "claude_request_replay")
+        self.assertEqual(row["shown_request"], "request-1")
+        self.assertEqual(row["consumed"]["at"], 1001.0)
+        self.assertEqual(row["consumed"]["call"], "toolu_received")
+        self.assertIsNone(row["shown_reason"])
+
+    def test_legacy_context_claims_never_grant_shown(self):
+        self.log.serve(seam="context", checked="shown")
+        row = self.rows()[0]
+        self.assertEqual(row["shown"], "unproven")
+
+    def test_native_fact_uses_only_the_moment_delivery_key(self):
+        self.log.serve(seam="context")
+        self.log.native_fact(1, json.dumps(CLAUDE_SHOWN))
+        self.log.db.execute("UPDATE moments SET delivery = 'another-delivery' WHERE id = 1")
+        self.log.db.commit()
+        self.assertEqual(self.rows()[0]["shown"], "unproven")
+
+    def test_candidates_in_one_delivery_share_one_fact_without_duplicate_rows(self):
+        for entry in ("rule-a", "rule-b"):
+            self.log.serve(seam="context", entry=entry, delivery="batch")
+            self.log.native_fact(self.log.next, json.dumps(CLAUDE_SHOWN))
+        rows = self.rows()
+        self.assertEqual([(r["entry"], r["shown"]) for r in rows], [("rule-a", "yes"), ("rule-b", "yes")])
+
+    def test_validated_native_consumption_accepts_both_sources_and_small_times(self):
+        from contextmd.serve import report
+        claude = copy.deepcopy(CLAUDE_SHOWN)
+        claude["record"]["at"], claude["consumed"]["at"], claude["checked_at"] = 1, 2, 3
+        codex = copy.deepcopy(claude)
+        codex["source"] = "codex_rollout"
+        codex["record"]["turn"] = "native-turn-1"
+        codex["consumed"].pop("request")
+        for harness, ev in (("claude", claude), ("codex", codex)):
+            with self.subTest(harness=harness):
+                value = report.consumption(harness, "shown", json.dumps(ev))
+                self.assertIsNotNone(value)
+                self.assertEqual(value.at, 2.0)
+                self.assertEqual(value.id, "msg-1")
+
+    def test_incomplete_or_malformed_native_proof_never_grants_consumption(self):
+        from contextmd.serve import report
+        invalid = [None, "{", "null", "[]", '"text"']
+        changes = [("v", True), ("v", 1.0), ("v", "1"), ("v", 2), ("source", None),
+                   ("source", "codex_rollout"), ("consumed", None), ("consumed", [])]
+        for key, value in changes:
+            ev = copy.deepcopy(CLAUDE_SHOWN); ev[key] = value
+            invalid.append(json.dumps(ev))
+        for part, key, value in [("record", "id", None), ("record", "id", ""), ("record", "slot", True),
+                                 ("record", "slot", -1), ("record", "slot", 0.5), ("record", "turn", "other-turn"),
+                                 ("consumed", "id", None), ("consumed", "call", []),
+                                 ("consumed", "request", None), ("record", "at", 1002),
+                                 ("consumed", "at", 1004)]:
+            ev = copy.deepcopy(CLAUDE_SHOWN); ev[part][key] = value
+            invalid.append(json.dumps(ev))
+        for value in (True, "1000", float("nan"), float("inf"), 10 ** 1000):
+            for part in ("record", "consumed", None):
+                ev = copy.deepcopy(CLAUDE_SHOWN)
+                if part:
+                    ev[part]["at"] = value
+                else:
+                    ev["checked_at"] = value
+                invalid.append(json.dumps(ev))
+        invalid.append('{"v":1,"checked_at":' + "1" * 5000 + '}')
+        for raw in invalid:
+            with self.subTest(raw=str(raw)[:80]):
+                self.assertIsNone(report.consumption("claude", "shown", raw))
+        for harness in ("grok", "opencode", "cursor", "antigravity", None, []):
+            self.assertIsNone(report.consumption(harness, "shown", json.dumps(CLAUDE_SHOWN)))
+        codex = copy.deepcopy(CLAUDE_SHOWN); codex["source"] = "codex_rollout"
+        self.assertIsNone(report.consumption("codex", "shown", json.dumps(codex)))
+        codex["record"]["turn"] = "native-turn-1"  # a request field still belongs only to Claude
+        self.assertIsNone(report.consumption("codex", "shown", json.dumps(codex)))
+
+    def test_unknown_native_reason_is_reported_without_treating_it_as_hidden(self):
+        self.log.serve(seam="context")
+        self.log.native_fact(1, '{"v":1,"source":null,"reason":"request_unverifiable"}', fact="unknown")
+        row = self.rows()[0]
+        self.assertEqual(row["shown"], "unproven")
+        self.assertEqual(row["shown_reason"], "request_unverifiable")
+        self.assertIn("Reasons: request_unverifiable 1.", self.run_report())
+        self.log.native_fact(1, "[]", fact="shown")
+        self.assertEqual(self.rows()[0]["shown"], "unproven")
 
     def test_lift_outcome_of_each_deny(self):
         self.log.serve(checked="shown", lift="read", session="a")
