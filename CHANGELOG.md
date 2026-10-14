@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1] - 2026-10-14
+
+### Changed
+
+- moment/unjoined rates only sessions that joined a Chromeria run, so outside Claude Code sessions and deploy-check probes no longer file false defects (#64, toolboxmd/chromeria#253)
+- A filed moment status whose moments include rows with no kind (a cut before the body parsed) names them `unknown kind` instead of crashing the health run before it files or saves its window (rocky, 2026-10-14).
+
 ## [0.6.0] - 2026-10-13
 
 ### Added

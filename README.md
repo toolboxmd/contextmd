@@ -198,6 +198,9 @@ repository that owns it. It reads only stored values, read-only:
   there are at least 10 such moments, they are over 5% of that harness's
   moments, and the harness has at least 100 moments. Statuses the server
   does not define are reported as unknown.
+  `unjoined` rates only sessions that joined a Chromeria run at least once,
+  because the hooks also post moments from sessions Chromeria never ran,
+  such as outside Claude Code sessions and deploy smoke probes (#64).
 - **Candidate outcomes.** It files `delivery_unverified`, `unverified`,
   `hidden`, `no_seam` and `carry_expired` at 10 rows. Every other outcome is
   reported only, including `failed_by_output`, `cut_budget`, `truncated` and
