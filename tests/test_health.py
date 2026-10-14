@@ -91,12 +91,14 @@ class HealthFixture:
         self.db.execute("INSERT OR REPLACE INTO heartbeats VALUES (?)", (at,))
         self.db.commit()
 
-    def moments(self, harness, status, n, at=NOW - 3600, kind="pre_tool", reason=None):
+    def moments(self, harness, status, n, at=NOW - 3600, kind="pre_tool", reason=None, session="sess-private",
+                run_id=None):
         ids = []
         for _ in range(n):
             self.next += 1
-            self.db.execute("INSERT INTO moments (id, received_at, harness, kind, session, status, reason)"
-                            " VALUES (?, ?, ?, ?, 'sess-private', ?, ?)", (self.next, at, harness, kind, status, reason))
+            self.db.execute("INSERT INTO moments (id, received_at, harness, kind, session, run_id, status, reason)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (self.next, at, harness, kind, session, run_id, status,
+                                                                 reason))
             ids.append(self.next)
         self.db.commit()
         return ids
@@ -157,6 +159,7 @@ class HealthTest(HealthFixture, unittest.TestCase):
         self.moments("grok", "ok", 991)
         self.moments("grok", "unjoined", 9)  # under 10 events
         self.moments("codex", "ok", 960)
+        self.moments("codex", "ok", 1, at=NOW - 3 * 86400, run_id="run-1")  # the session joined a run once
         self.moments("codex", "unjoined", 40)  # 4%: under 5%
         self.run_health()
         self.assertEqual(self.writes(), [])
@@ -165,6 +168,23 @@ class HealthTest(HealthFixture, unittest.TestCase):
                         "--to", datetime.fromtimestamp(NOW, timezone.utc).isoformat())
         [issue] = self.filed("toolboxmd/chromeria")
         self.assertIn("ContextMD-Class: moment/unjoined", issue["body"])
+
+    def test_unjoined_moments_of_sessions_that_never_joined_a_run_are_not_rated(self):
+        self.moments("claude", "ok", 150, run_id="run-1")
+        self.moments("claude", "unjoined", 30, session="outside-claude-p")
+        self.moments("claude", "unjoined", 20, session="deploy-check")
+        self.run_health()
+        self.assertEqual(self.writes(), [])
+
+    def test_a_session_that_joined_once_still_rates_its_unjoined_moments(self):
+        self.moments("claude", "ok", 1, at=NOW - 3 * 86400, session="sess-run", run_id="run-1")
+        self.moments("claude", "ok", 150, session="sess-run", run_id="run-1")
+        self.moments("claude", "unjoined", 20, session="sess-run")
+        self.moments("claude", "unjoined", 30, session="deploy-check")
+        self.run_health()
+        [issue] = self.filed("toolboxmd/chromeria")
+        self.assertIn("ContextMD-Class: moment/unjoined", issue["body"])
+        self.assertIn("20 of 170", issue["body"])
 
     def test_an_expected_harness_with_no_moments(self):
         self.configure(expected_harnesses=["claude", "opencode"])

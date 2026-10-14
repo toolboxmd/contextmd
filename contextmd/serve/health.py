@@ -9,7 +9,8 @@ with no pre-tool row (#57) are ``measures``; their rows file through the same Is
   explicit ``--from``/``--to`` slice never touches the stored window.
 - **Moment status:** filed when a status other than ``ok`` has at least ``MIN_EVENTS`` moments and
   more than ``MAX_RATE`` of that harness's moments, with at least ``MIN_MOMENTS`` moments. Any
-  status outside ``STATUSES`` is reported as unknown and judged by the same rule.
+  status outside ``STATUSES`` is reported as unknown and judged by the same rule. ``unjoined`` rates
+  only sessions that joined a Chromeria run at least once (#64): outside sessions and smoke probes never join.
 - **Candidate outcome:** a class in ``FILED_OUTCOMES`` is filed at ``MIN_EVENTS`` rows. Every other
   outcome is reported, never filed. ``unsupported_key`` is reported: every stored row so far is a
   tool with no command or path to key on, which is normal (#40 comment).
@@ -86,8 +87,10 @@ def measure(db_path: Path, start: float, end: float, expected: list[str], now: f
         db = sqlite3.connect(f"{db_path.absolute().as_uri()}?mode=ro", uri=True)
         try:
             beat = db.execute("SELECT max(at) FROM heartbeats").fetchone()[0]
-            moments = db.execute("SELECT id, harness, kind, status FROM moments WHERE received_at >= ? AND"
-                                 " received_at < ?", (start, end)).fetchall()
+            moments = db.execute("SELECT id, harness, kind, status, status = 'unjoined' AND NOT EXISTS (SELECT 1"
+                                 " FROM moments j WHERE j.harness = m.harness AND j.session = m.session AND"
+                                 " j.run_id IS NOT NULL) FROM moments m WHERE received_at >= ? AND received_at < ?",
+                                 (start, end)).fetchall()
             outcomes = db.execute("""SELECT c.id, m.harness, c.outcome FROM candidates c JOIN moments m
                                      ON m.id = c.moment_id WHERE m.received_at >= ? AND m.received_at < ?""",
                                   (start, end)).fetchall()
@@ -110,12 +113,16 @@ def measure(db_path: Path, start: float, end: float, expected: list[str], now: f
         statuses = Counter(m[3] for m in rows)
         results = Counter(c[2] for c in out_by_harness.get(harness, []))
         result.harnesses[harness] = {"moments": len(rows), "statuses": dict(statuses), "outcomes": dict(results)}
+        outside = sum(m[4] for m in rows)  # unjoined moments of sessions that never joined a run
         for status, count in statuses.items():
-            if status == "ok" or count < MIN_EVENTS or len(rows) < MIN_MOMENTS or count / len(rows) <= MAX_RATE:
+            total = len(rows)
+            if status == "unjoined":
+                count, total = count - outside, total - outside
+            if status == "ok" or count < MIN_EVENTS or total < MIN_MOMENTS or count / total <= MAX_RATE:
                 continue
-            hit = [m for m in rows if m[3] == status]
+            hit = [m for m in rows if m[3] == status and not m[4]]
             filed.setdefault(f"moment/{status}", Finding(f"moment/{status}")).rows.append(
-                {"harness": harness, "count": count, "total": len(rows), "rate": count / len(rows),
+                {"harness": harness, "count": count, "total": total, "rate": count / total,
                  "kinds": dict(Counter(m[2] for m in hit)), "ids": [m[0] for m in hit[:MAX_IDS]]})
         for outcome, count in results.items():
             if outcome not in FILED_OUTCOMES or count < MIN_EVENTS:
