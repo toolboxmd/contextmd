@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.0] - 2026-10-14
+
+### Changed
+
+- Flat YAML Libraries replace recursive stores, derive exact-key and Cue membership from one header, preserve long knowledge as full-read pointers, and discover project Libraries by convention.
+
 ## [0.6.3] - 2026-10-14
 
 ### Changed

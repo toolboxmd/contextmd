@@ -1,0 +1,1882 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "name": "plain",
+      "file": "plain.md",
+      "text": "---\ncommand: git push\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "git push"
+      },
+      "expect": {
+        "id": "plain",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "flow",
+      "file": "flow.md",
+      "text": "---\ncommand: [git push, \"gh pr create\"]\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": ["git push", "gh pr create"]
+      },
+      "expect": {
+        "id": "flow",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "comma",
+      "file": "comma.md",
+      "text": "---\nerror: ['bad, outcome', 'it''s wrong']\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "error": ["bad, outcome", "it's wrong"]
+      },
+      "expect": {
+        "id": "comma",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "apostrophe",
+      "file": "apostrophe.md",
+      "text": "---\ncommand: [it's fine, fetch]\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": ["it's fine", "fetch"]
+      },
+      "expect": {
+        "id": "apostrophe",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "both",
+      "file": "both.md",
+      "text": "---\ncommand: [git push]\nname: Push\napplies: 'When pushing. Not: fetching.'\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": ["git push"],
+        "name": "Push",
+        "applies": "When pushing. Not: fetching."
+      },
+      "expect": {
+        "id": "both",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": true,
+        "legacy": false
+      }
+    },
+    {
+      "name": "cue",
+      "file": "cue.md",
+      "text": "---\nname: Research\napplies: \"When facts: beyond reach.\"\ntarget: \"docs/record.md\"\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "name": "Research",
+        "applies": "When facts: beyond reach.",
+        "target": "docs/record.md"
+      },
+      "expect": {
+        "id": "cue",
+        "body": "Body.",
+        "long": false,
+        "exact": false,
+        "cue": true,
+        "legacy": false
+      }
+    },
+    {
+      "name": "target",
+      "file": "target.md",
+      "text": "---\ncommand: git push\ntarget: \"record.md\"\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "git push",
+        "target": "record.md"
+      },
+      "expect": {
+        "id": "target",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "emoji-id",
+      "file": "emoji-id.md",
+      "text": "---\nid: 😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\ncommand: x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "id": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "command": "x"
+      },
+      "expect": {
+        "id": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "json-pair",
+      "file": "json-pair.md",
+      "text": "---\nname: \"\\ud83d\\ude00\"\napplies: \"When.\"\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "name": "😀",
+        "applies": "When."
+      },
+      "expect": {
+        "id": "json-pair",
+        "body": "Body.",
+        "long": false,
+        "exact": false,
+        "cue": true,
+        "legacy": false
+      }
+    },
+    {
+      "name": "escapes",
+      "file": "escapes.md",
+      "text": "---\ncommand: \"gh pr create\"\nerror: \"a\\/b\\u00e9\\twrong\"\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "gh pr create",
+        "error": "a/bé\twrong"
+      },
+      "expect": {
+        "id": "escapes",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "single",
+      "file": "single.md",
+      "text": "---\ncommand: 'it''s # not: commentary'\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "it's # not: commentary"
+      },
+      "expect": {
+        "id": "single",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "tab",
+      "file": "tab.md",
+      "text": "---\ncommand:\tgit\tpush\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "git\tpush"
+      },
+      "expect": {
+        "id": "tab",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "comment",
+      "file": "comment.md",
+      "text": "---\n# comment\ncommand: git push\n  # another\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "git push"
+      },
+      "expect": {
+        "id": "comment",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "nbsp",
+      "file": "nbsp.md",
+      "text": "---\ncommand: gh pr\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "gh pr"
+      },
+      "expect": {
+        "id": "nbsp",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "core-string",
+      "file": "core-string.md",
+      "text": "---\ncommand: 1:30\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "1:30"
+      },
+      "expect": {
+        "id": "core-string",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "bool",
+      "file": "bool.md",
+      "text": "---\ncommand: x\nmust-know-before: TRUE\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x",
+        "must-know-before": true
+      },
+      "expect": {
+        "id": "bool",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "dot",
+      "file": "a.b.md",
+      "text": "---\ncommand: x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x"
+      },
+      "expect": {
+        "id": "a.b",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "nel",
+      "file": "nel.md",
+      "text": "---\ncommand: x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x"
+      },
+      "expect": {
+        "id": "nel",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "feff",
+      "file": "feff.md",
+      "text": "---\ncommand: x\n---\nBody.﻿\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x"
+      },
+      "expect": {
+        "id": "feff",
+        "body": "Body.﻿",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "1800",
+      "file": "1800.md",
+      "text": "---\ncommand: x\n---\n😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x"
+      },
+      "expect": {
+        "id": "1800",
+        "body": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "1801",
+      "file": "1801.md",
+      "text": "---\ncommand: x\n---\n😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀x\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x"
+      },
+      "expect": {
+        "id": "1801",
+        "body": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀x",
+        "long": true,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "long-target",
+      "file": "long-target.md",
+      "text": "---\ncommand: x\nmust-know-before: true\ntarget: \"record.md\"\n---\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x",
+        "must-know-before": true,
+        "target": "record.md"
+      },
+      "expect": {
+        "id": "long-target",
+        "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "long": true,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "tilde-user",
+      "file": "tilde-user.md",
+      "text": "---\ncommand: x\ntarget: ~someone/record.md\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x",
+        "target": "~someone/record.md"
+      },
+      "expect": {
+        "id": "tilde-user",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "unicode-error",
+      "file": "unicode-error.md",
+      "text": "---\nerror: Erreur ١٢, id 34\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "error": "Erreur ١٢, id 34"
+      },
+      "expect": {
+        "id": "unicode-error",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "legacy-command",
+      "file": "legacy-command.md",
+      "text": "---\ncommand: git push\ncommand: gh pr create\ncommand: git commit\ncommand: gh pr merge\n---\nBody.\n",
+      "mode": "legacy",
+      "yaml": "invalid",
+      "fields": {
+        "command": ["git push", "gh pr create", "git commit", "gh pr merge"]
+      },
+      "expect": {
+        "id": "legacy-command",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": true
+      }
+    },
+    {
+      "name": "legacy-cue",
+      "file": "legacy-cue.md",
+      "text": "---\nname: Example\napplies: A: b; C: d; E: f. Not: later.\n---\nBody.\n",
+      "mode": "legacy",
+      "yaml": "invalid",
+      "fields": {
+        "name": "Example",
+        "applies": "A: b; C: d; E: f. Not: later."
+      },
+      "expect": {
+        "id": "legacy-cue",
+        "body": "Body.",
+        "long": false,
+        "exact": false,
+        "cue": true,
+        "legacy": true
+      }
+    },
+    {
+      "name": "legacy-path",
+      "file": "legacy-path.md",
+      "text": "---\npath: **/x.md\n---\nBody.\n",
+      "mode": "legacy",
+      "yaml": "invalid",
+      "fields": {
+        "path": "**/x.md"
+      },
+      "expect": {
+        "id": "legacy-path",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": true
+      }
+    },
+    {
+      "name": "duplicate",
+      "file": "duplicate.md",
+      "text": "---\ncommand: x\ncommand: y\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "invalid",
+      "error": {
+        "code": "duplicate_field",
+        "line": 3,
+        "field": "command"
+      }
+    },
+    {
+      "name": "duplicate-id",
+      "file": "duplicate-id.md",
+      "text": "---\nid: a\nid: b\ncommand: x\n---\nBody.\n",
+      "mode": "legacy",
+      "yaml": "invalid",
+      "error": {
+        "code": "duplicate_field",
+        "line": 3,
+        "field": "id"
+      }
+    },
+    {
+      "name": "colon",
+      "file": "colon.md",
+      "text": "---\nname: X\napplies: When: x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "invalid",
+      "error": {
+        "code": "syntax",
+        "line": 3,
+        "field": null
+      }
+    },
+    {
+      "name": "star",
+      "file": "star.md",
+      "text": "---\npath: **/x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "unknown",
+      "file": "unknown.md",
+      "text": "---\ncommand: x\ninvented: y\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "unknown_field",
+        "line": null,
+        "field": null
+      }
+    },
+    {
+      "name": "empty-field",
+      "file": "empty-field.md",
+      "text": "---\ncommand:\nname: X\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "command"
+      }
+    },
+    {
+      "name": "empty-list",
+      "file": "empty-list.md",
+      "text": "---\ncommand: []\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "command"
+      }
+    },
+    {
+      "name": "empty-quoted",
+      "file": "empty-quoted.md",
+      "text": "---\ncommand: ''\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "command"
+      }
+    },
+    {
+      "name": "space",
+      "file": "space.md",
+      "text": "---\ncommand: '   '\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "command"
+      }
+    },
+    {
+      "name": "wrong-flag",
+      "file": "wrong-flag.md",
+      "text": "---\ncommand: x\nmust-know-before: yes\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "wrong_type",
+        "line": 3,
+        "field": "must-know-before"
+      }
+    },
+    {
+      "name": "wrong-command",
+      "file": "wrong-command.md",
+      "text": "---\ncommand: true\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "wrong_type",
+        "line": 2,
+        "field": "command"
+      }
+    },
+    {
+      "name": "wrong-id",
+      "file": "wrong-id.md",
+      "text": "---\nid: 123\ncommand: x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "wrong_type",
+        "line": 2,
+        "field": "id"
+      }
+    },
+    {
+      "name": "wrong-item",
+      "file": "wrong-item.md",
+      "text": "---\ncommand: [x, false]\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "wrong_type",
+        "line": 2,
+        "field": "command"
+      }
+    },
+    {
+      "name": "null-item",
+      "file": "null-item.md",
+      "text": "---\ncommand: [x, null]\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "command"
+      }
+    },
+    {
+      "name": "long-id",
+      "file": "long-id.md",
+      "text": "---\nid: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ncommand: x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "id_too_long",
+        "line": null,
+        "field": "id"
+      }
+    },
+    {
+      "name": "no-matcher",
+      "file": "no-matcher.md",
+      "text": "---\nid: x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "no_matcher",
+        "line": null,
+        "field": null
+      }
+    },
+    {
+      "name": "no-applies",
+      "file": "no-applies.md",
+      "text": "---\nname: X\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "cue_incomplete",
+        "line": null,
+        "field": null
+      }
+    },
+    {
+      "name": "must-cue",
+      "file": "must-cue.md",
+      "text": "---\nname: X\napplies: When.\nmust-know-before: true\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "must_know_without_key",
+        "line": null,
+        "field": null
+      }
+    },
+    {
+      "name": "block-list",
+      "file": "block-list.md",
+      "text": "---\ncommand:\n  - git push\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "syntax",
+        "line": 3,
+        "field": null
+      }
+    },
+    {
+      "name": "trailing-comma",
+      "file": "trailing-comma.md",
+      "text": "---\ncommand: [git push,]\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "nested",
+      "file": "nested.md",
+      "text": "---\ncommand: [[git, push]]\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "comment-value",
+      "file": "comment-value.md",
+      "text": "---\ncommand: x # ignored\n---\nBody.\n",
+      "mode": "legacy",
+      "yaml": "unsupported",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "lone-surrogate",
+      "file": "lone-surrogate.md",
+      "text": "---\nname: \"\\ud83d\"\napplies: When.\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "decoded-newline",
+      "file": "decoded-newline.md",
+      "text": "---\ncommand: \"git\\npush\"\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "quote",
+      "file": "quote.md",
+      "text": "---\ncommand: \"git push\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "flow-quote",
+      "file": "flow-quote.md",
+      "text": "---\ncommand: [\"git push, fetch]\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "trailing-text",
+      "file": "trailing-text.md",
+      "text": "---\ncommand: \"git push\" more\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "flow-colon",
+      "file": "flow-colon.md",
+      "text": "---\ncommand: [a: b]\n---\nBody.\n",
+      "mode": "legacy",
+      "yaml": "unsupported",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "key-space",
+      "file": "key-space.md",
+      "text": "---\ncommand : x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "bare-cr",
+      "file": "bare-cr.md",
+      "text": "---\ncommand: x\rnext\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "none",
+      "error": {
+        "code": "encoding",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "control",
+      "file": "control.md",
+      "text": "---\ncommand: xy\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "none",
+      "error": {
+        "code": "encoding",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "empty-filename",
+      "file": ".md",
+      "text": "---\ncommand: x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": null,
+        "field": "id"
+      }
+    },
+    {
+      "name": "empty-body",
+      "file": "empty-body.md",
+      "text": "---\ncommand: x\n---\n \t\n",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_body",
+        "line": null,
+        "field": null
+      }
+    },
+    {
+      "name": "bom",
+      "file": "bom.md",
+      "text": "﻿---\ncommand: x\n---\nBody.\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x"
+      },
+      "expect": {
+        "id": "bom",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "crlf",
+      "file": "crlf.md",
+      "text": "---\r\ncommand: x\r\n---\r\nBody.\r\n",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x"
+      },
+      "expect": {
+        "id": "crlf",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "bad-utf8",
+      "file": "bad-utf8.md",
+      "raw_b64": "LS0tCmNvbW1hbmQ6IHgKLS0tCv8=",
+      "mode": "strict",
+      "yaml": "none",
+      "error": {
+        "code": "encoding",
+        "line": null,
+        "field": null
+      }
+    },
+    {
+      "name": "backslash remains part of a POSIX file name",
+      "file": "a\\b.md",
+      "text": "---\ncommand: x\n---\nBody.",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "x"
+      },
+      "expect": {
+        "id": "a\\b",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "valueless field then block item after comment",
+      "file": "e.md",
+      "text": "---\ncommand:\n\n# Comment\n- git push\n---\nBody.",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "syntax",
+        "line": 5,
+        "field": null
+      }
+    },
+    {
+      "name": "valueless field then another field after comment",
+      "file": "e.md",
+      "text": "---\ncommand:\n\n# Comment\npath: x\n---\nBody.",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "command"
+      }
+    },
+    {
+      "name": "trailing valueless field",
+      "file": "e.md",
+      "text": "---\npath: x\ncommand:\n---\nBody.",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 3,
+        "field": "command"
+      }
+    },
+    {
+      "name": "U+FEFF forbidden in plain value",
+      "file": "e.md",
+      "text": "---\ncommand: git﻿push\n---\nBody.",
+      "mode": "strict",
+      "yaml": "spec_invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "U+FEFF forbidden in plain flow item",
+      "file": "e.md",
+      "text": "---\ncommand: [x, git﻿push]\n---\nBody.",
+      "mode": "strict",
+      "yaml": "spec_invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "U+FEFF forbidden in comment",
+      "file": "e.md",
+      "text": "---\n# ﻿ comment\ncommand: x\n---\nBody.",
+      "mode": "strict",
+      "yaml": "spec_invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "U+FEFF preserved when quoted",
+      "file": "e.md",
+      "text": "---\ncommand: \"git﻿push\"\n---\nBody.",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "git﻿push"
+      },
+      "expect": {
+        "id": "e",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "U+FFFE forbidden in plain value",
+      "file": "e.md",
+      "text": "---\ncommand: git￾push\n---\nBody.",
+      "mode": "strict",
+      "yaml": "spec_invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "U+FFFE forbidden in plain flow item",
+      "file": "e.md",
+      "text": "---\ncommand: [x, git￾push]\n---\nBody.",
+      "mode": "strict",
+      "yaml": "spec_invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "U+FFFE forbidden in comment",
+      "file": "e.md",
+      "text": "---\n# ￾ comment\ncommand: x\n---\nBody.",
+      "mode": "strict",
+      "yaml": "spec_invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "U+FFFE preserved when quoted",
+      "file": "e.md",
+      "text": "---\ncommand: \"git￾push\"\n---\nBody.",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "git￾push"
+      },
+      "expect": {
+        "id": "e",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "U+FFFF forbidden in plain value",
+      "file": "e.md",
+      "text": "---\ncommand: git￿push\n---\nBody.",
+      "mode": "strict",
+      "yaml": "spec_invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "U+FFFF forbidden in plain flow item",
+      "file": "e.md",
+      "text": "---\ncommand: [x, git￿push]\n---\nBody.",
+      "mode": "strict",
+      "yaml": "spec_invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "U+FFFF forbidden in comment",
+      "file": "e.md",
+      "text": "---\n# ￿ comment\ncommand: x\n---\nBody.",
+      "mode": "strict",
+      "yaml": "spec_invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "U+FFFF preserved when quoted",
+      "file": "e.md",
+      "text": "---\ncommand: \"git￿push\"\n---\nBody.",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "git￿push"
+      },
+      "expect": {
+        "id": "e",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "blank command scalar",
+      "file": "e.md",
+      "text": "---\ncommand: \" \\t \"\n---\nBody.",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "command"
+      }
+    },
+    {
+      "name": "blank command flow item",
+      "file": "e.md",
+      "text": "---\ncommand: [git push, \" \"]\n---\nBody.",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "command"
+      }
+    },
+    {
+      "name": "blank error scalar",
+      "file": "e.md",
+      "text": "---\nerror: \" \\t \"\n---\nBody.",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "error"
+      }
+    },
+    {
+      "name": "blank error flow item",
+      "file": "e.md",
+      "text": "---\nerror: [x, \"　\"]\n---\nBody.",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "error"
+      }
+    },
+    {
+      "name": "raw quoted FEFF error is empty in at least one normalizer",
+      "file": "e.md",
+      "text": "---\nerror: \"﻿\"\n---\nBody.",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "error"
+      }
+    },
+    {
+      "name": "escaped quoted FEFF error is empty in at least one normalizer",
+      "file": "e.md",
+      "text": "---\nerror: \"\\ufeff\"\n---\nBody.",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "error"
+      }
+    },
+    {
+      "name": "legacy cannot relax raw FEFF in plain",
+      "file": "e.md",
+      "text": "---\ncommand: *git﻿push\n---\nBody.",
+      "mode": "legacy",
+      "yaml": "spec_invalid",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "legacy cannot relax empty error",
+      "file": "e.md",
+      "text": "---\nerror: \" \"\n---\nBody.",
+      "mode": "legacy",
+      "yaml": "unsupported",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "error"
+      }
+    },
+    {
+      "name": "valueless field then block item after blank",
+      "file": "e.md",
+      "text": "---\ncommand:\n\n- git push\n---\nBody.",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "error": {
+        "code": "syntax",
+        "line": 4,
+        "field": null
+      }
+    },
+    {
+      "name": "plain apostrophe does not start a flow quote",
+      "file": "e.md",
+      "text": "---\ncommand: [don't, \"can't\"]\n---\nBody.",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": ["don't", "can't"]
+      },
+      "expect": {
+        "id": "e",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "escaped quoted FEFF command",
+      "file": "e.md",
+      "text": "---\ncommand: \"\\ufeff\"\n---\nBody.",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "command": "﻿"
+      },
+      "expect": {
+        "id": "e",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "nonempty error with FEFF stays raw",
+      "file": "e.md",
+      "text": "---\nerror: \"\\ufeffx\"\n---\nBody.",
+      "mode": "strict",
+      "yaml": "same",
+      "fields": {
+        "error": "﻿x"
+      },
+      "expect": {
+        "id": "e",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw LS is a YAML non-break character in plain value",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: git push\n---\nBody.",
+      "fields": {
+        "command": "git push"
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw LS is a YAML non-break character in single value",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: 'git push'\n---\nBody.",
+      "fields": {
+        "command": "git push"
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw LS is a YAML non-break character in double value",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: \"git push\"\n---\nBody.",
+      "fields": {
+        "command": "git push"
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw LS is a YAML non-break character in flow value",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: [git push]\n---\nBody.",
+      "fields": {
+        "command": ["git push"]
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw quoted LS-only error is semantically empty",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "text": "---\nerror: \" \"\n---\nBody.",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "error"
+      }
+    },
+    {
+      "name": "raw PS is a YAML non-break character in plain value",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: git push\n---\nBody.",
+      "fields": {
+        "command": "git push"
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw PS is a YAML non-break character in single value",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: 'git push'\n---\nBody.",
+      "fields": {
+        "command": "git push"
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw PS is a YAML non-break character in double value",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: \"git push\"\n---\nBody.",
+      "fields": {
+        "command": "git push"
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw PS is a YAML non-break character in flow value",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: [git push]\n---\nBody.",
+      "fields": {
+        "command": ["git push"]
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw quoted PS-only error is semantically empty",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "text": "---\nerror: \" \"\n---\nBody.",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "error"
+      }
+    },
+    {
+      "name": "raw tab in double quotes",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: \"git\tpush\"\n---\nBody.",
+      "fields": {
+        "command": "git\tpush"
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw tab in a quoted flow item",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: [\"git\tpush\", git fetch]\n---\nBody.",
+      "fields": {
+        "command": ["git\tpush", "git fetch"]
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "literal backslash followed by raw tab",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "same",
+      "text": "---\ncommand: \"git\\\\\tpush\"\n---\nBody.",
+      "fields": {
+        "command": "git\\\tpush"
+      },
+      "expect": {
+        "id": "separator",
+        "body": "Body.",
+        "long": false,
+        "exact": true,
+        "cue": false,
+        "legacy": false
+      }
+    },
+    {
+      "name": "raw tab-only error is semantically empty",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "text": "---\nerror: \"\t\"\n---\nBody.",
+      "error": {
+        "code": "empty_value",
+        "line": 2,
+        "field": "error"
+      }
+    },
+    {
+      "name": "backslash followed by raw tab is an unsupported escape",
+      "file": "separator.md",
+      "mode": "strict",
+      "yaml": "unsupported",
+      "text": "---\ncommand: \"git\\\tpush\"\n---\nBody.",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "legacy reader rejects leading flow mapping {x: y}",
+      "file": "separator.md",
+      "mode": "legacy",
+      "yaml": "unsupported",
+      "text": "---\ncommand: {x: y}\n---\nBody.",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "legacy reader rejects leading flow mapping {x: y",
+      "file": "separator.md",
+      "mode": "legacy",
+      "yaml": "invalid",
+      "text": "---\ncommand: {x: y\n---\nBody.",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    },
+    {
+      "name": "legacy reader rejects leading flow mapping {x:}",
+      "file": "separator.md",
+      "mode": "legacy",
+      "yaml": "unsupported",
+      "text": "---\ncommand: {x:}\n---\nBody.",
+      "error": {
+        "code": "syntax",
+        "line": 2,
+        "field": null
+      }
+    }
+  ],
+  "stores": [
+    {
+      "name": "flat listing and code point order",
+      "dirs": ["library", "library/nested"],
+      "files": {
+        "library/README.md": "not an entry",
+        "library/rEaDmE.md": "not an entry",
+        "library/nested/ignored.md": "not an entry",
+        "library/😀.md": "---\ncommand: x\n---\nEmoji.",
+        "library/.md": "---\ncommand: y\n---\nBMP."
+      },
+      "links": {},
+      "sources": [
+        {
+          "directory": "library",
+          "registered": false
+        }
+      ],
+      "expect": {
+        "exact": ["", "😀"],
+        "cue": [],
+        "bodies": ["BMP.", "Emoji."],
+        "errors": [],
+        "legacy": 0,
+        "owners": ["library"]
+      }
+    },
+    {
+      "name": "project shadows and rejects incoming both wholly",
+      "dirs": ["project", "shared"],
+      "files": {
+        "project/a.md": "---\nid: same\ncommand: x\n---\nProject.",
+        "shared/both.md": "---\nid: same\ncommand: y\nname: Cue\napplies: When.\n---\nShared."
+      },
+      "links": {},
+      "sources": [
+        {
+          "directory": "project",
+          "registered": false
+        },
+        {
+          "directory": "shared",
+          "registered": true
+        }
+      ],
+      "expect": {
+        "exact": ["same"],
+        "cue": [],
+        "bodies": ["Project."],
+        "errors": ["shared/both.md"],
+        "legacy": 0,
+        "owners": ["project", "shared"]
+      }
+    },
+    {
+      "name": "same id in distinct matchers stays legal",
+      "dirs": ["project", "shared"],
+      "files": {
+        "project/a.md": "---\nid: same\ncommand: x\n---\nProject.",
+        "shared/cue.md": "---\nid: same\nname: Cue\napplies: When.\n---\nCue."
+      },
+      "links": {},
+      "sources": [
+        {
+          "directory": "project",
+          "registered": false
+        },
+        {
+          "directory": "shared",
+          "registered": true
+        }
+      ],
+      "expect": {
+        "exact": ["same"],
+        "cue": ["same"],
+        "bodies": ["Project.", "Cue."],
+        "errors": [],
+        "legacy": 0,
+        "owners": ["project", "shared"]
+      }
+    },
+    {
+      "name": "registered alias grants reading tolerance and deduplicates",
+      "dirs": ["library"],
+      "files": {
+        "library/old.md": "---\ncommand: x\ncommand: y\n---\nLegacy."
+      },
+      "links": {
+        "alias": "library"
+      },
+      "sources": [
+        {
+          "directory": "library",
+          "registered": false
+        },
+        {
+          "directory": "alias",
+          "registered": true
+        }
+      ],
+      "expect": {
+        "exact": ["old"],
+        "cue": [],
+        "bodies": ["Legacy."],
+        "errors": [],
+        "legacy": 1,
+        "owners": ["library"]
+      }
+    },
+    {
+      "name": "project Library refuses legacy",
+      "dirs": ["library"],
+      "files": {
+        "library/old.md": "---\ncommand: x\ncommand: y\n---\nLegacy."
+      },
+      "links": {},
+      "sources": [
+        {
+          "directory": "library",
+          "registered": false
+        }
+      ],
+      "expect": {
+        "exact": [],
+        "cue": [],
+        "bodies": [],
+        "errors": ["library/old.md"],
+        "legacy": 0,
+        "owners": ["library"]
+      }
+    },
+    {
+      "name": "missing conventional Library is normal but configured store errors",
+      "dirs": [],
+      "files": {},
+      "links": {},
+      "sources": [
+        {
+          "directory": "missing-project",
+          "registered": false
+        },
+        {
+          "directory": "missing-shared",
+          "registered": true
+        }
+      ],
+      "expect": {
+        "exact": [],
+        "cue": [],
+        "bodies": [],
+        "errors": ["missing-shared"],
+        "legacy": 0,
+        "owners": []
+      }
+    },
+    {
+      "name": "dangling entry is reported but Markdown-named directories are ignored",
+      "dirs": ["library", "library/folder.md"],
+      "files": {},
+      "links": {
+        "library/broken.md": "missing"
+      },
+      "sources": [
+        {
+          "directory": "library",
+          "registered": false
+        }
+      ],
+      "expect": {
+        "exact": [],
+        "cue": [],
+        "bodies": [],
+        "errors": ["library/broken.md"],
+        "legacy": 0,
+        "owners": ["library"]
+      }
+    }
+  ],
+  "discovery": [
+    {
+      "name": "repository root",
+      "dirs": ["repo/.git", "repo/library"],
+      "files": {},
+      "links": {},
+      "thread": "repo",
+      "expect": "repo/library"
+    },
+    {
+      "name": "repository subdirectory",
+      "dirs": ["repo/.git", "repo/library", "repo/sub/deep"],
+      "files": {},
+      "links": {},
+      "thread": "repo/sub/deep",
+      "expect": "repo/library"
+    },
+    {
+      "name": "worktree subdirectory",
+      "dirs": ["tree/library", "tree/sub"],
+      "files": {
+        "tree/.git": "gitdir: /unused"
+      },
+      "links": {},
+      "thread": "tree/sub",
+      "expect": "tree/library"
+    },
+    {
+      "name": "nested repository stops parent discovery",
+      "dirs": [
+        "repo/.git",
+        "repo/library",
+        "repo/nested/.git",
+        "repo/nested/library",
+        "repo/nested/sub"
+      ],
+      "files": {},
+      "links": {},
+      "thread": "repo/nested/sub",
+      "expect": "repo/nested/library"
+    },
+    {
+      "name": "non-Git authoritative directory",
+      "dirs": ["plain/library"],
+      "files": {},
+      "links": {},
+      "thread": "plain",
+      "expect": "plain/library"
+    },
+    {
+      "name": "Library symlink resolves physical owner",
+      "dirs": ["repo/.git", "shared"],
+      "files": {},
+      "links": {
+        "repo/library": "shared"
+      },
+      "thread": "repo",
+      "expect": "shared"
+    },
+    {
+      "name": "Library file is absent",
+      "dirs": ["repo/.git"],
+      "files": {
+        "repo/library": "not a directory"
+      },
+      "links": {},
+      "thread": "repo",
+      "expect": null
+    },
+    {
+      "name": "dangling Library link is absent",
+      "dirs": ["repo/.git"],
+      "files": {},
+      "links": {
+        "repo/library": "missing"
+      },
+      "thread": "repo",
+      "expect": null
+    },
+    {
+      "name": "missing thread is absent",
+      "dirs": [],
+      "files": {},
+      "links": {},
+      "thread": "missing",
+      "expect": null
+    },
+    {
+      "name": "nested checkout without Library does not inherit parent",
+      "dirs": ["repo/.git", "repo/library", "repo/nested/.git"],
+      "files": {},
+      "links": {},
+      "thread": "repo/nested",
+      "expect": null
+    }
+  ]
+}

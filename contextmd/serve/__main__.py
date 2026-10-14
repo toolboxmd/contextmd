@@ -37,7 +37,10 @@ def main(argv=None) -> int:
     lp = sub.add_parser("log")
     lp.add_argument("--base", required=True, type=Path)
     lp.add_argument("--session")
-    sub.add_parser("check")
+    check = sub.add_parser("check")
+    inputs = check.add_mutually_exclusive_group()
+    inputs.add_argument("--entry", nargs="+", type=Path, help="strictly validate newly authored YAML entries")
+    inputs.add_argument("--project", type=Path, help="also check this project's conventional Library")
     rp = sub.add_parser("report")
     rp.add_argument("--base", required=True, type=Path)
     rp.add_argument("--since", help="ISO date or time, UTC unless it names a zone")
@@ -64,19 +67,44 @@ def main(argv=None) -> int:
     cp.add_argument("--json", action="store_true", help="the card as JSON, for the outcome judge")
     ns = ap.parse_args(argv)
     if ns.cmd == "check":
+        if ns.entry:
+            entries, errors = [], []
+            for file in ns.entry:
+                try:
+                    parsed = store.parse_file(file.expanduser().absolute())
+                    exact, intent = parsed.views()
+                    entries.append({"file": parsed.path, "id": parsed.id, "version": parsed.version,
+                                    "matchers": (["exact_key"] if exact else []) + (["intent"] if intent else []),
+                                    "long": parsed.long})
+                except (store.EntryError, OSError) as exc:
+                    errors.append(f"{file}: {exc}")
+            print(json.dumps({"entries": entries, "errors": errors}, indent=2))
+            return 1 if errors else 0
         cfg = config.load()
-        st, cue = store.load(cfg.exact_keys), store.load_cue(cfg.cue)
-        print(json.dumps({
-            "exact_keys": {"entries": [{"id": e.id, "version": e.version, "must_know_before": e.must_know_before,
-                                        "target": e.target, "bytes": len(e.text.encode())} for e in st.entries],
-                           "owners": st.owners, "errors": st.errors},
+        directory = store.library_dir(str(ns.project)) if ns.project else None
+        sources = ([store.Source(directory, False)] if directory else []) + cfg.exact_keys + cfg.cue
+        library = store.load(sources)
+        exact_files = {e.path for e in library.entries}
+        cue_files = {e.path for e in library.cue}
+        def row(e):
+            return {"id": e.id, "version": e.version, "target": e.target, "file": e.path,
+                    "bytes": len(e.text.encode()), "long": e.long, "legacy": e.legacy,
+                    "matchers": (["exact_key"] if e.path in exact_files else []) + (["intent"] if e.path in cue_files else [])}
+        report = {
+            "exact_keys": {"entries": [{**row(e), "must_know_before": e.must_know_before} for e in library.entries],
+                           "owners": library.owners, "errors": library.errors, "legacy": library.legacy},
             "cue": {"url": cfg.cue_url,
-                    "entries": [{"id": e.id, "version": e.version, "name": e.name, "target": e.target,
-                                 "applies_chars": len(e.applies), "bytes": len(e.text.encode())}
-                                for e in cue.entries],
-                    "owners": cue.owners, "errors": cue.errors},
-        }, indent=2))
-        return 1 if st.errors or cue.errors else 0
+                    "entries": [{**row(e), "name": e.name, "applies_chars": len(e.applies)} for e in library.cue],
+                    "owners": library.owners, "errors": library.errors, "legacy": library.legacy},
+        }
+        if ns.project:
+            project_entries = {e.path: e for e in [*library.entries, *library.cue]
+                               if directory and Path(e.path).parent == Path(directory)}
+            report["project"] = {"entries": [row(e) for e in project_entries.values()],
+                                 "owners": {directory: library.owners[directory]} if directory in library.owners else {},
+                                 "errors": library.errors, "legacy": library.legacy}
+        print(json.dumps(report, indent=2))
+        return 1 if library.errors else 0
     base = ns.base.expanduser().resolve()
     if ns.cmd == "health":
         return _health(ns, base)

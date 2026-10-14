@@ -77,7 +77,7 @@ flowchart TD
     RD["Readers called by path; OpenCode reservations"]
     %% RD: toolboxmd/chromeria#221
     LF["Library format, flat"]
-    %% LF: #41
+    %% LF: #41 toolboxmd/chromeria#268
     PT["Pointer-trial retirement"]
     %% PT: #43
     NC["Non-code capture"]
@@ -121,6 +121,7 @@ flowchart TD
     EK --- CK
     EK --- RD
     LF -.-> ST
+    LF -.-> CI
     PT --> EK
     NC -.-> C
     EK -.-> RL
