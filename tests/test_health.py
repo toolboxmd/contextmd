@@ -178,13 +178,21 @@ class HealthTest(HealthFixture, unittest.TestCase):
 
     def test_a_session_that_joined_once_still_rates_its_unjoined_moments(self):
         self.moments("claude", "ok", 1, at=NOW - 3 * 86400, session="sess-run", run_id="run-1")
-        self.moments("claude", "ok", 150, session="sess-run", run_id="run-1")
+        self.moments("claude", "ok", 150, session="sess-other", run_id="run-2")
         self.moments("claude", "unjoined", 20, session="sess-run")
         self.moments("claude", "unjoined", 30, session="deploy-check")
         self.run_health()
         [issue] = self.filed("toolboxmd/chromeria")
         self.assertIn("ContextMD-Class: moment/unjoined", issue["body"])
         self.assertIn("20 of 170", issue["body"])
+
+    def test_a_filed_status_with_no_kind_moments_names_them(self):
+        self.moments("claude", "ok", 150)
+        self.moments("claude", "over_budget", 20)
+        self.moments("claude", "over_budget", 5, kind=None)  # cut before the body parsed
+        self.run_health()
+        [issue] = self.filed("toolboxmd/contextmd")
+        self.assertIn("pre_tool 20, unknown kind 5", issue["body"])
 
     def test_an_expected_harness_with_no_moments(self):
         self.configure(expected_harnesses=["claude", "opencode"])

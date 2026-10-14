@@ -31,7 +31,7 @@ flowchart TD
     KV["4b Key variant proposal"]
     %% KV: #17
     SI["4c Serving health check"]
-    %% SI: #40
+    %% SI: #40 #64 PR #65
     CX["4d Cue miss example to retraining"]
     %% CX: #16 #4
     ES["4e Escalation proposal"]

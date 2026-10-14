@@ -123,7 +123,7 @@ def measure(db_path: Path, start: float, end: float, expected: list[str], now: f
             hit = [m for m in rows if m[3] == status and not m[4]]
             filed.setdefault(f"moment/{status}", Finding(f"moment/{status}")).rows.append(
                 {"harness": harness, "count": count, "total": total, "rate": count / total,
-                 "kinds": dict(Counter(m[2] for m in hit)), "ids": [m[0] for m in hit[:MAX_IDS]]})
+                 "kinds": dict(Counter(m[2] or "unknown kind" for m in hit)), "ids": [m[0] for m in hit[:MAX_IDS]]})
         for outcome, count in results.items():
             if outcome not in FILED_OUTCOMES or count < MIN_EVENTS:
                 continue
