@@ -415,6 +415,39 @@ class SegmentsTest(unittest.TestCase):
                 with self.subTest(command=command):
                     self.assertEqual(e.matches(keys.extract("Bash", {"command": command}, None)) is not None, expected)
 
+    def test_ascii_whitespace_parity_for_all_six_divergent_code_points(self):
+        # Same escaped fixtures as Chromeria; none of these characters is ASCII whitespace.
+        for sep, encoded in [
+            ("\u0085", "\\u0085"), ("\u001c", "\\u001c"), ("\u001d", "\\u001d"),
+            ("\u001e", "\\u001e"), ("\u001f", "\\u001f"), ("\ufeff", "\\ufeff"),
+        ]:
+            with self.subTest(code_point=encoded):
+                token = f"gh{sep}pr{sep}create"
+                for command in [f"echo {token}", f"echo '{token}'"]:
+                    result = keys.extract("Bash", {"command": command}, None)
+                    self.assertEqual(result.words, ["echo", token])
+                    self.assertFalse(result.has_command(["gh", "pr", "create"]))
+                self.assertEqual(
+                    keys.extract("Bash", {"command": f"printf '%s' '{token}'"}, None).words,
+                    ["printf", "%s", token],
+                )
+                self.assertEqual(
+                    keys.extract("Bash", {"command": f"bash -c $'echo gh{encoded}pr{encoded}create'"}, None).words,
+                    ["bash", "-c", "echo", token],
+                )
+                path = f"{sep}/Users/u/.t3/userdata/chromeria-v2.sqlite"
+                command = f"sqlite3 '{path}'"
+                result = keys.extract("Bash", {"command": command}, None)
+                self.assertEqual(result.words, ["sqlite3", path])
+                self.assertEqual(keys.shell_paths(keys.words(command)), [path])
+                self.assertTrue(result.has_command(["chromeria-v2.sqlite"]))
+                self.assertEqual(keys.normalize_error(f"{sep}GH{sep}12{sep}"), f"{sep}gh{sep}#{sep}")
+        self.assertEqual(keys.words("gh \t\n\r\v\fpr create"), ["gh", "pr", "create"])
+        self.assertFalse(
+            keys.extract("Bash", {"command": "echo 'gh \t\n\r\v\fpr create'"}, None).has_command(["gh", "pr", "create"])
+        )
+        self.assertEqual(keys.normalize_error(" \t\n\r\v\fGH 12 \t\n\r\v\f"), "gh #")
+
     def assert_command_cases(self, runs, mentions):
         # Same fixtures as Chromeria, with /bin/bash and a PATH-local gh stub as the oracle.
         e = store.Entry("e", "v", "t", commands=[["gh", "pr", "create"]])

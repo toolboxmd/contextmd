@@ -14,7 +14,11 @@ from dataclasses import dataclass, field
 
 SHELL_TOOLS = {"Bash"}
 PATH_FIELDS = ("file_path", "notebook_path", "path")
-WORD_BREAK = re.compile(r"[\s;&|()<>`$\"'\\{}]+")
+# Chromeria's Matcher.ts uses the same ASCII whitespace set.
+WHITESPACE = " \t\n\r\v\f"
+HAS_WHITESPACE = re.compile("[" + WHITESPACE + "]")
+WHITESPACE_RUN = re.compile("[" + WHITESPACE + "]+")
+WORD_BREAK = re.compile("[" + WHITESPACE + r""";&|()<>`$"'\\{}]+""")
 
 
 class Unsupported(ValueError):
@@ -39,7 +43,7 @@ class Keys:
 def normalize_error(text: str) -> str:
     """Error signature: lowercase, digits collapsed, whitespace collapsed."""
     text = re.sub(r"\d+", "#", text.lower())
-    return re.sub(r"\s+", " ", text).strip()
+    return WHITESPACE_RUN.sub(" ", text).strip(WHITESPACE)
 
 
 def words(command: str) -> list[str]:
@@ -47,8 +51,11 @@ def words(command: str) -> list[str]:
 
 
 # Literal markers use the same ASCII shell boundaries in both languages, including Unicode.
-HEREDOC_START = re.compile(r"""<<(-?)[ \t]*(['"]?)([^ \t\r\n;&|()<>'"\\]+)\2(?=$|[ \t\r\n;&|()<>])""")
-SHELL_BREAK = re.compile(r"[ \t\r\n;&|()<>]")
+HEREDOC_START = re.compile(
+    r"""<<(-?)[""" + WHITESPACE[:2] + r"""]*(['"]?)([^""" + WHITESPACE +
+    r""";&|()<>'"\\]+)\2(?=$|[""" + WHITESPACE + r""";&|()<>])"""
+)
+SHELL_BREAK = re.compile("[" + WHITESPACE + ";&|()<>]")
 REDIRECTION = re.compile(r"(?:[0-9]+)?(<<<|[<>][&<>|]?)")
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 ANSI_ESCAPES = {
@@ -232,7 +239,7 @@ def visible_command(command: str) -> str:
             out += kept + "\n"
             i = j
             continue
-        if ch in " \t\r\n;&|()":
+        if HAS_WHITESPACE.fullmatch(ch) or ch in ";&|()":
             if ch in "\n;&|()":
                 shell = "none"
             out += ch
@@ -244,11 +251,11 @@ def visible_command(command: str) -> str:
             i = redirection.end()
             continue
         value, plain, quoted, runs, end = _shell_word(text, i)
-        kept = ("" if re.search(r"\s", value) else value) if quoted else plain
+        kept = ("" if HAS_WHITESPACE.search(value) else value) if quoted else plain
         if shell == "script":
             kept = visible_command(value)
             shell = "none"
-        elif (not quoted or not re.search(r"\s", value)) and value.rsplit("/", 1)[-1] in SHELLS:
+        elif (not quoted or not HAS_WHITESPACE.search(value)) and value.rsplit("/", 1)[-1] in SHELLS:
             shell = "options"
         elif shell == "options" and re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", value):
             shell = "script"
