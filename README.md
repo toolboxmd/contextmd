@@ -218,10 +218,10 @@ model. It covers every serve the hook settled (`injected`, `truncated`,
 check did not find in the call's recorded output (`hidden`). Per serve it
 records:
 
-- `shown`: `yes` when Chromeria found the deny text in the call's recorded
-  output, `no` when its check did not find it there, `unproven` otherwise
-  (context serves, denies on Codex and OpenCode, and denies whose check never
-  arrived);
+- `shown`: `yes` when a Claude request record or Codex rollout proves context
+  receipt followed by a response, or Chromeria found the deny text in the
+  call's recorded output; `no` for a recorded negative; `unproven` without
+  usable evidence. Grok and OpenCode context serves remain unproven;
 - `lift`: how a deny's rule lifted (`read`, `delivered_inline`,
   `not_read_capped`), `open` when the session went on without that, or
   `pending` when nothing came after it yet;
@@ -317,8 +317,12 @@ The first lines say what happened and why it matters, then give the facts.
 The judge labels the card with
 [`prompts/serve/label.md`](prompts/serve/label.md), using only the card's
 `allowed_labels`. `ignored` is allowed only on a serve proven shown
-(`shown = yes`), and a breach on any other serve stays unlabeled. A window cut
-at 60 events still allows every label its events can prove, except
+(`shown = yes`), and a breach on any other serve stays unlabeled. For context,
+the governed action must be marked `after_consumption`: strictly after the
+first output of the consuming response, or the exact consuming call itself.
+The card shows the native source, request reference and why receipt is
+unproven. A window cut at 60 events still allows every label its events can
+prove, except
 `no_governed_action`, since the governed action may come after the cut. A card
 the judge must not label names its gap under `no_evidence`:
 
