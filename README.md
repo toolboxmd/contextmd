@@ -30,8 +30,10 @@ Answer every prompt of the PR template before opening a PR.
   command. Unquoted words and quoted words whose dequoted value has no whitespace
   count, including arguments and quoted file paths. Quoted prose and literal
   heredoc bodies do not match. Shell scripts passed to `sh -c` (also `bash`,
-  `zsh` and `dash`), command substitutions and backticks contribute their
-  commands. The first word may be an executable path (`/usr/bin/gh`).
+  `zsh`, `dash` and `ksh`), command substitutions and backticks contribute their
+  commands. Shell invocations count in any word position, so printed invocations
+  such as `echo bash -c '...'` also match. The first word may be an executable
+  path (`/usr/bin/gh`).
 - `path` is a glob on the repository-relative path of a file tool (`**` spans
   directories).
 - `error` matches a substring of the failure text or of the tool's output,

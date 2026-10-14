@@ -248,7 +248,6 @@ class SegmentsTest(unittest.TestCase):
             "bash -ce 'echo \"gh pr create\"'",
             "bash -o pipefail -c 'echo \"gh pr create\"'",
             "bash -o pipefail -ce 'echo \"gh pr create\"'",
-            "echo sh -c 'gh pr create'",
         ]
         self.assert_command_cases(runs, mentions)
 
@@ -369,6 +368,52 @@ class SegmentsTest(unittest.TestCase):
                 with self.subTest(command=command):
                     hit = e.matches(keys.extract("Bash", {"command": command}, None)) is not None
                     self.assertEqual(hit, expected)
+
+    def test_shell_scripts_after_controls_and_command_running_tools(self):
+        runs = [
+          "if true; then bash -c 'gh pr create'; fi",
+          "! bash -c 'gh pr create'",
+          "{ bash -c 'gh pr create'; }",
+          "for i in 1; do bash -c 'gh pr create'; done",
+          "xargs bash -c 'gh pr create'",
+          "find . -exec bash -c 'gh pr create' \\;",
+          "timeout 5 bash -c 'gh pr create'",
+          "ssh host bash -c 'gh pr create'",
+          "xargs bash -o pipefail -ce 'gh pr create'",
+          "env ksh -c 'gh pr create'"
+        ]
+        mentions = [
+          "if true; then bash -c 'echo \"gh pr create\"'; fi",
+          "! bash -c 'echo \"gh pr create\"'",
+          "{ bash -c 'echo \"gh pr create\"'; }",
+          "for i in 1; do bash -c 'echo \"gh pr create\"'; done",
+          "xargs bash -c 'echo \"gh pr create\"'",
+          "find . -exec bash -c 'echo \"gh pr create\"' \\;",
+          "timeout 5 bash -c 'echo \"gh pr create\"'",
+          "ssh host bash -c 'echo \"gh pr create\"'",
+          "env ksh -c 'echo \"gh pr create\"'"
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_printed_shell_invocations_match_in_the_safe_direction(self):
+        # Printed shell invocations match by policy; these cases do not execute gh.
+        runs = [
+          "echo bash -c 'gh pr create'",
+          "echo sh -c 'gh pr create'",
+          "echo \"bash\" -ce 'gh pr create'",
+          "echo b'a'sh -o pipefail -c 'gh pr create'",
+          "echo ksh -c 'gh pr create'"
+        ]
+        mentions = [
+          "echo bash -c 'echo \"gh pr create\"'",
+          "echo 'bash -c gh pr create'",
+          "echo bash -c 'echo done' _ -c 'gh pr create'"
+        ]
+        e = store.Entry("e", "v", "t", commands=[["gh", "pr", "create"]])
+        for commands, expected in ((runs, True), (mentions, False)):
+            for command in commands:
+                with self.subTest(command=command):
+                    self.assertEqual(e.matches(keys.extract("Bash", {"command": command}, None)) is not None, expected)
 
     def assert_command_cases(self, runs, mentions):
         # Same fixtures as Chromeria, with /bin/bash and a PATH-local gh stub as the oracle.
