@@ -63,15 +63,22 @@ WRAPPER_ARGUMENTS = {
     "exec": ("-a",),
 }
 SHELLS = {"sh", "bash", "zsh", "dash"}
+ANSI_ESCAPES = {
+    "a": "\x07", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f",
+    "n": "\n", "r": "\r", "t": "\t", "v": "\v", "\\": "\\",
+    "'": "'", '"': '"', "?": "?",
+}
+ANSI_NUMBER = re.compile(r"\\(?:([0-7]{1,3})|x([A-Fa-f0-9]{1,2})|u([A-Fa-f0-9]{1,4})|U([A-Fa-f0-9]{1,8}))")
 
 
 def _quoted_end(text: str, start: int) -> int:
     """A quote inside an expansion belongs to that expansion, not the enclosing string."""
     quote, i = text[start], start + 1
+    ansi = quote == "'" and start > 0 and text[start - 1] == "$"
     while i < len(text):
         if text[i] == quote:
             return i
-        if quote == '"' and text[i] == "\\":
+        if (quote == '"' or ansi) and text[i] == "\\":
             i += 2
             continue
         expansion = _expansion_at(text, i) if quote == '"' else None
@@ -143,13 +150,24 @@ def _substitutions(text: str) -> str:
 def _shell_word(text: str, start: int) -> tuple[str, str, str, int]:
     """One shell word: dequote its value, retaining unquoted fragments and substitutions."""
     i, quote, value, plain, runs = start, "", "", "", []
+    ansi_start = 0
     while i < len(text):
         ch = text[i]
         if not quote and SHELL_BREAK.fullmatch(ch):
             break
-        if ch == quote:
+        if ch == quote or (quote == "$'" and ch == "'"):
+            if quote == "$'":
+                # Bash cannot keep a NUL in a word; only this ANSI-C segment ends there.
+                nul = value.find("\0", ansi_start)
+                if nul >= 0:
+                    value = value[:nul]
             quote = ""
             i += 1
+            continue
+        if not quote and text.startswith("$'", i):
+            quote = "$'"
+            ansi_start = len(value)
+            i += 2
             continue
         if not quote and ch in "'\"":
             quote = ch
@@ -157,6 +175,17 @@ def _shell_word(text: str, start: int) -> tuple[str, str, str, int]:
             continue
         if ch == "\\" and quote != "'":
             next_char = text[i + 1:i + 2]
+            if quote == "$'":
+                numeric = ANSI_NUMBER.match(text, i)
+                if numeric:
+                    digits = next(group for group in numeric.groups() if group is not None)
+                    code = int(digits, 8 if numeric.group(1) is not None else 16)
+                    value += chr(code) if code <= 0x10ffff else numeric.group(0)
+                    i = numeric.end()
+                else:
+                    value += ANSI_ESCAPES.get(next_char, ch + next_char)
+                    i += 2
+                continue
             if not quote or next_char in "$`\"\\\n":
                 if next_char != "\n":
                     value += next_char
@@ -166,7 +195,7 @@ def _shell_word(text: str, start: int) -> tuple[str, str, str, int]:
                 plain += text[i:i + 2]
             i += 2
             continue
-        expansion = _expansion_at(text, i) if quote != "'" else None
+        expansion = _expansion_at(text, i) if quote not in ("'", "$'") else None
         if expansion:
             body, end, command = expansion
             raw = text[i:end]
@@ -250,7 +279,7 @@ def visible_command(command: str) -> str:
                     wrapper = program
                 else:
                     position, shell = "argument", program in SHELLS
-        elif shell and re.fullmatch(r"-[a-z]*c", value):
+        elif shell and re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", value):
             position = "script"
         out += f" {kept} {runs} "
         i = end

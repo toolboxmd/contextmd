@@ -234,6 +234,46 @@ class SegmentsTest(unittest.TestCase):
         ]
         self.assert_command_cases(runs, mentions)
 
+    def test_shell_script_options_before_or_clustered_with_c(self):
+        runs = [
+            "bash -ce 'gh pr create'",
+            "bash -cE 'gh pr create'",
+            "bash -ec 'gh pr create'",
+            "bash -o pipefail -c 'gh pr create'",
+            "bash --noprofile -o pipefail -ce '\"g\"h pr create'",
+            "env FLAG=1 bash -o pipefail -ce 'gh pr create'",
+        ]
+        mentions = [
+            "bash -ce 'echo \"gh pr create\"'",
+            "bash -o pipefail -c 'echo \"gh pr create\"'",
+            "bash -o pipefail -ce 'echo \"gh pr create\"'",
+            "echo sh -c 'gh pr create'",
+        ]
+        self.assert_command_cases(runs, mentions)
+
+    def test_ansi_c_quoted_shell_script_words(self):
+        runs = [
+            "bash -c $'gh pr create'",
+            "bash -c $'gh pr create\\0; echo mention'",
+            "bash -c $'\\x67h pr create'",
+            "bash -c $'\\147h pr create'",
+            "bash -c $'\\u0067h pr create'",
+            "bash -c $'\\x27gh\\x27 pr create'",
+            "bash -c $'gh\\x20pr\\tcreate'",
+            "sh -c $'\\x67h pr create'",
+            "bash -c $'g'\"h pr create\"",
+        ]
+        mentions = [
+            "bash -c $'echo \\\"gh pr create\\\"'",
+            "bash -c $'printf \\'%s\\' \\'gh pr create\\''",
+            "bash -c $'echo \\x22gh pr create\\x22'",
+            "bash -c $'echo \\047gh pr create\\047'",
+            "echo $'gh pr create'",
+            "bash -c $'echo \\0; gh pr create'",
+            "bash -c $'echo \"$(printf \\'%s\\' \\'gh pr create\\')\"'",
+        ]
+        self.assert_command_cases(runs, mentions)
+
     def assert_command_cases(self, runs, mentions):
         # Same fixtures as Chromeria, with /bin/bash and a PATH-local gh stub as the oracle.
         e = store.Entry("e", "v", "t", commands=[["gh", "pr", "create"]])
