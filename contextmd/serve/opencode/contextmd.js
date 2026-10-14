@@ -98,6 +98,10 @@ async function drop(sessionID) {
   const list = served.get(sessionID) || [];
   served.delete(sessionID);
   for (const item of list) {
+    // A failed settle puts a shown reply back to pending so the next call can retry.
+    // That reply already reached the model, so the reservation stays until it settles
+    // or the window expires.
+    if (item.shown) continue;
     if (item.state !== "pending" && item.state !== "retry") continue;
     item.state = "dropped";
     await item.release();
@@ -127,6 +131,7 @@ export default async function contextmd(ctx) {
       }
       for (const item of list) {
         if (item.state === "refused") continue;
+        item.shown = true;
         last.parts.push({
           id: `prt_contextmd${randomBytes(6).toString("hex")}`,
           sessionID: last.info.sessionID,

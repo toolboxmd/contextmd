@@ -4,7 +4,7 @@
 
 ### Changed
 
-- The OpenCode plugin releases a reply it drops, so the reservation does not wait out the settle window.
+- The OpenCode plugin releases a reply it drops before the model sees it, so the reservation does not wait out the settle window. A reply already shown stays reserved until it settles.
 
 ## [0.6.1] - 2026-10-14
 

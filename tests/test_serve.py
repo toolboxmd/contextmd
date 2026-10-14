@@ -537,6 +537,33 @@ await hooks["experimental.chat.messages.transform"]({}, m);
 out.afterOff = m.messages[0].parts.map((p) => p.text);
 out.settlesWhileOff = settles.length - settlesBeforeOff;
 out.releasesWhileOff = releases.length - releasesBeforeOff;
+
+// Shown, then the settle failed: the next turn must not release that reply.
+let failShown = 1;
+globalThis.fetch = (url) => {
+  if (url.endsWith("/moment")) {
+    return new Promise((resolve) => replies.push((body) => resolve({ status: 200, json: async () => body })));
+  }
+  if (url.includes("/release/")) {
+    releases.push(url);
+    return Promise.resolve({ status: 204 });
+  }
+  settles.push(url);
+  if (failShown-- > 0) return Promise.reject(new Error("timeout"));
+  return Promise.resolve({ status: 204 });
+};
+const seen = hooks["chat.message"]({ sessionID: "shown" }, {});
+while (replies.length < 6) await new Promise((r) => setImmediate(r));
+replies[5]({ context: "SEEN" });
+await seen;
+m = { messages: [{ info: { role: "user", id: "m2", sessionID: "shown" }, parts: [] }] };
+await hooks["experimental.chat.messages.transform"]({}, m);
+const releasesBeforeDrop = releases.length;
+const next = hooks["chat.message"]({ sessionID: "shown" }, {});
+while (replies.length < 7) await new Promise((r) => setImmediate(r));
+replies[6]({ context: "NEXT" });
+await next;
+out.releasedAfterShown = releases.length - releasesBeforeDrop;
 console.log(JSON.stringify(out));
 """
 
@@ -569,6 +596,7 @@ class OpenCodePluginTest(unittest.TestCase):
                 (out["whileOff"], out["afterOff"], out["settlesWhileOff"], out["releasesWhileOff"]),
                 ([], [], 0, 1),
             )
+            self.assertEqual(out["releasedAfterShown"], 0)
 
 
 TRUNCATION_SCRIPT = r"""
