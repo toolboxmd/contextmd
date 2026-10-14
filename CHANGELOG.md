@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.2] - 2026-10-14
+
+### Changed
+
+- The OpenCode plugin releases a reply it drops, so the reservation does not wait out the settle window.
+
 ## [0.6.1] - 2026-10-14
 
 ### Changed

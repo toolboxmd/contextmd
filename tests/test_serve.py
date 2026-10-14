@@ -446,13 +446,21 @@ PLUGIN_SCRIPT = r"""
 const [pluginPath] = process.argv.slice(2);
 const replies = [];      // pending moment replies, resolved by the script
 const settles = [];
+const releases = [];
+const track = (url) => {
+  if (url.includes("/release/")) {
+    releases.push(url);
+    return Promise.resolve({ status: 204 });
+  }
+  settles.push(url);
+  return Promise.resolve({ status: url.includes("expired") ? 404 : 204 });
+};
 globalThis.fetch = (url) => {
   if (url.endsWith("/moment")) {
     return new Promise((resolve) => replies.push((body) =>
       resolve({ status: 200, json: async () => body })));
   }
-  settles.push(url);
-  return Promise.resolve({ status: url.includes("expired") ? 404 : 204 });
+  return track(url);
 };
 const { default: plugin } = await import(pluginPath);
 const hooks = await plugin({ directory: "/tmp" });
@@ -462,6 +470,8 @@ const out = {};
 // A tool reply that arrives after the next user message belongs to the old turn.
 const late = hooks["tool.execute.after"]({ tool: "bash", sessionID: "s", callID: "c1", args: {} }, { output: "", metadata: { exit: 0 } });
 const turn = hooks["chat.message"]({ sessionID: "s" }, {});
+// chat.message drops the previous turn before it asks, so its fetch is one tick later.
+while (replies.length < 2) await new Promise((r) => setImmediate(r));
 replies[1]({ context: "NEW TURN" });
 await turn;
 replies[0]({ context: "OLD TURN" });
@@ -478,6 +488,7 @@ m = msgs();
 await hooks["experimental.chat.messages.transform"]({}, m);
 out.afterDeny = m.messages[0].parts.map((p) => p.text);
 out.settles = settles.length;
+out.released = releases.length;
 
 // A settle that failed in transit is retried on the next model call; a refused one is shown no more.
 let failSettle = 1;
@@ -485,11 +496,16 @@ globalThis.fetch = (url) => {
   if (url.endsWith("/moment")) {
     return new Promise((resolve) => replies.push((body) => resolve({ status: 200, json: async () => body })));
   }
+  if (url.includes("/release/")) {
+    releases.push(url);
+    return Promise.resolve({ status: 204 });
+  }
   settles.push(url);
   if (failSettle-- > 0) return Promise.reject(new Error("timeout"));
   return Promise.resolve({ status: 404 });
 };
 const t2 = hooks["chat.message"]({ sessionID: "s" }, {});
+while (replies.length < 4) await new Promise((r) => setImmediate(r));
 replies[3]({ context: "SECOND" });
 await t2;
 const before = settles.length;
@@ -504,12 +520,14 @@ out.afterRefusal = m.messages[0].parts.map((p) => p.text);
 
 // With the off switch, queued text is neither shown nor settled, and is forgotten.
 const t3 = hooks["chat.message"]({ sessionID: "s" }, {});
+while (replies.length < 5) await new Promise((r) => setImmediate(r));
 replies[4]({ context: "THIRD" });
 await t3;
 const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
 const offDir = process.argv[3];
 writeFileSync(offDir + "/off", "");
 const settlesBeforeOff = settles.length;
+const releasesBeforeOff = releases.length;
 m = msgs();
 await hooks["experimental.chat.messages.transform"]({}, m);
 out.whileOff = m.messages[0].parts.map((p) => p.text);
@@ -518,6 +536,7 @@ m = msgs();
 await hooks["experimental.chat.messages.transform"]({}, m);
 out.afterOff = m.messages[0].parts.map((p) => p.text);
 out.settlesWhileOff = settles.length - settlesBeforeOff;
+out.releasesWhileOff = releases.length - releasesBeforeOff;
 console.log(JSON.stringify(out));
 """
 
@@ -543,9 +562,13 @@ class OpenCodePluginTest(unittest.TestCase):
             self.assertNotIn("RULE", out["thrown"])
             self.assertEqual(out["afterDeny"], ["NEW TURN", "RULE"])
             self.assertEqual(out["settles"], 2)
+            self.assertEqual(out["released"], 1)
             self.assertEqual(out["retried"], 2)
             self.assertEqual(out["afterRefusal"], [])
-            self.assertEqual((out["whileOff"], out["afterOff"], out["settlesWhileOff"]), ([], [], 0))
+            self.assertEqual(
+                (out["whileOff"], out["afterOff"], out["settlesWhileOff"], out["releasesWhileOff"]),
+                ([], [], 0, 1),
+            )
 
 
 TRUNCATION_SCRIPT = r"""

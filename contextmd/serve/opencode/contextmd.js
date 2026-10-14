@@ -12,7 +12,9 @@
  * still throws in tool.execute.before to stop the call, with a short reason
  * that points at that part. The part is added again on every model call until
  * the next user message, because a transform is not saved. The plugin settles
- * a reply when it first adds its part, just before the model reads it.
+ * a reply when it first adds its part, just before the model reads it, and
+ * releases a reply it drops before that, so the reservation does not wait out
+ * OpenCode's settle window (chromeria#221).
  * OpenCode has no before-done hook. Every failure is silent: the call proceeds
  * unserved.
  */
@@ -57,15 +59,19 @@ async function moment(raw) {
     const reply = await res.json();
     // "confirmed" (204), "refused" (the module released or never held it: stop showing it;
     // it serves the rule again if it still applies) or "retry" (network, timeout, 5xx).
-    const settle = () =>
-      fetch(`${ep.url}/contextmd/v1/settle/${delivery}`, {
+    const post = (action) =>
+      fetch(`${ep.url}/contextmd/v1/${action}/${delivery}`, {
         method: "POST",
         headers: { authorization: `Bearer ${ep.token}` },
         signal: AbortSignal.timeout(300),
-      })
+      });
+    const settle = () =>
+      post("settle")
         .then((r) => (r.status === 204 ? "confirmed" : r.status >= 500 ? "retry" : "refused"))
         .catch(() => "retry");
-    return { reply, settle };
+    // A drop the server never hears about holds the reservation until the 120 s window.
+    const release = () => post("release").then(() => undefined, () => undefined);
+    return { reply, settle, release };
   } catch {
     return null;
   }
@@ -77,11 +83,25 @@ async function moment(raw) {
 const served = new Map();
 const turns = new Map();
 
-function queue(sessionID, turn, text, settle) {
-  if ((turns.get(sessionID) || 0) !== turn) return;
+function queue(sessionID, turn, text, settle, release) {
+  if ((turns.get(sessionID) || 0) !== turn) {
+    void release();
+    return;
+  }
   const list = served.get(sessionID) || [];
-  list.push({ text, settle, state: "pending" });
+  list.push({ text, settle, release, state: "pending" });
   served.set(sessionID, list);
+}
+
+/** Forget queued text for a session, and free any reply the model has not been shown. */
+async function drop(sessionID) {
+  const list = served.get(sessionID) || [];
+  served.delete(sessionID);
+  for (const item of list) {
+    if (item.state !== "pending" && item.state !== "retry") continue;
+    item.state = "dropped";
+    await item.release();
+  }
 }
 
 export default async function contextmd(ctx) {
@@ -91,10 +111,10 @@ export default async function contextmd(ctx) {
       // A new user message: earlier served text belonged to the previous turn.
       const turn = (turns.get(input.sessionID) || 0) + 1;
       turns.set(input.sessionID, turn);
-      served.delete(input.sessionID);
+      await drop(input.sessionID);
       const got = await moment({ hook: "chat.message", directory, input: { sessionID: input.sessionID } });
       const text = got && got.reply && got.reply.context;
-      if (text) queue(input.sessionID, turn, text, got.settle);
+      if (text) queue(input.sessionID, turn, text, got.settle, got.release);
     },
     "experimental.chat.messages.transform": async (_input, output) => {
       const last = [...output.messages].reverse().find((m) => m.info.role === "user");
@@ -102,7 +122,7 @@ export default async function contextmd(ctx) {
       if (!list || list.length === 0) return;
       // Serving switched off: show and settle nothing more, and forget what was queued.
       if (endpoint() === null) {
-        served.delete(last.info.sessionID);
+        await drop(last.info.sessionID);
         return;
       }
       for (const item of list) {
@@ -130,8 +150,11 @@ export default async function contextmd(ctx) {
       });
       const text = got && got.reply && got.reply.deny;
       // A deny whose rule could not reach the model must not stop the call.
-      if (!text || (turns.get(input.sessionID) || 0) !== turn) return;
-      queue(input.sessionID, turn, text, got.settle);
+      if (!text || (turns.get(input.sessionID) || 0) !== turn) {
+        if (got && got.reply) await got.release();
+        return;
+      }
+      queue(input.sessionID, turn, text, got.settle, got.release);
       throw new Error(STOPPED);
     },
     "tool.execute.after": async (input, output) => {
@@ -148,7 +171,8 @@ export default async function contextmd(ctx) {
         output: { metadata: { exit: meta.exit, truncated }, output: out.slice(-MAX_OUTPUT) },
       });
       const text = got && got.reply && got.reply.context;
-      if (text) queue(input.sessionID, turn, text, got.settle);
+      if (text) queue(input.sessionID, turn, text, got.settle, got.release);
+      else if (got && got.reply) await got.release();
     },
     event: async ({ event }) => {
       if (event && event.type === "session.compacted" && event.properties && event.properties.sessionID) {
