@@ -16,7 +16,8 @@ From Agent Observer's ledger, read ``mode=ro``, over the health window two hours
 (Codex: completed shell execs, the ``exec-`` tool results its hook names) inside their session's
 first-to-last logged moment, in sessions whose every Observer source was imported at or after that
 session's served activity in the window (its last moment, or the window's end while the session goes on)
-with no unread tail; a session with no Observer source is not judged. A call whose pre-tool row is
+with complete sources: no unread JSONL tail, or a fingerprinted OpenCode database import without
+recorded import errors. A session with no Observer source is not judged. A call whose pre-tool row is
 ``over_budget`` is a server cut; a call with no pre-tool row of any status is *no pre-tool row*,
 cause unknown. Everything not judged is counted and printed, never counted as lost.
 
@@ -136,21 +137,29 @@ def _observed(db: sqlite3.Connection, ledger: sqlite3.Connection, m: Measures) -
     m.idless = db.execute("""SELECT count(*) FROM moments WHERE status = 'over_budget' AND tool_use_id IS NULL
                              AND received_at >= ? AND received_at < ?""", (start, end)).fetchone()[0]
     try:
-        sources = {s: (imported, tail) for s, imported, tail in ledger.execute(
-            """SELECT session_id, min(imported_at), max(read_offset < size_bytes) FROM sources
-               WHERE session_id IS NOT NULL GROUP BY session_id""")}
+        # OpenCode fingerprints a session snapshot and leaves read_offset at zero.
+        # Even a partial database read updates imported_at/sha256, so recorded
+        # import errors must also exclude it. Do not infer completeness from size.
+        sources = {(h, s): (imported, tail, incomplete) for h, s, imported, tail, incomplete in ledger.execute(
+            """SELECT harness, session_id, min(imported_at),
+                      max(harness != 'opencode' AND read_offset < size_bytes),
+                      max(harness = 'opencode' AND (sha256 = '' OR EXISTS (
+                          SELECT 1 FROM import_errors e WHERE e.harness = sources.harness
+                          AND (e.source_path = sources.path OR
+                               e.source_path = substr(sources.path, 1, instr(sources.path, '#') - 1)))))
+               FROM sources WHERE session_id IS NOT NULL GROUP BY harness, session_id""")}
         events = ledger.execute(
             """SELECT id, session_key, family, native_id, ts FROM events WHERE ts >= ? AND ts < ?
                AND family IN ('tool_call', 'tool_result')""", (start, end)).fetchall()
     except sqlite3.Error as exc:
         raise ObserverError(str(exc)) from exc
-    m.excluded["sourceless"] = sum(1 for (_, s) in last if s not in sources)
+    m.excluded["sourceless"] = sum(1 for key in last if key not in sources)
     stale = set()
 
     def synced(harness: str, session: str, span: tuple) -> bool:
         """Every Observer source of the session imported after its served activity in the window, fully read."""
-        imported, tail = sources.get(session, (None, None))
-        return imported is not None and not tail and imported >= min(span[1], end)
+        imported, tail, incomplete = sources.get((harness, session), (None, None, None))
+        return imported is not None and not tail and not incomplete and imported >= min(span[1], end)
     for eid, key, family, call, ts in events:
         harness, _, session = key.partition(":")
         wanted = (family == "tool_result" and call.startswith("exec-")) if harness == "codex" else family == "tool_call"
@@ -166,6 +175,8 @@ def _observed(db: sqlite3.Connection, ledger: sqlite3.Connection, m: Measures) -
         if not synced(harness, session, span):
             stale.add((harness, session))
             m.excluded["not_synced"] += 1
+            if sources.get((harness, session), (None, None, False))[2]:
+                m.excluded["incomplete_database"] += 1
             continue
         o = m.observer.setdefault(harness, {"judged": 0, "cut": 0, "gap": 0, "ids": []})
         o["judged"] += 1
@@ -274,5 +285,8 @@ def render(current: Measures, previous: Measures) -> list[str]:
                  f" {x['outside']} outside their session's first-to-last moment, {x['not_synced']} in"
                  f" {x['stale_sessions']} sessions not synced, {x['sourceless']} served sessions with no Observer"
                  f" source. over_budget rows without ids: {current.idless}")
+    if x["incomplete_database"]:
+        lines.append(f"Not synced includes {x['incomplete_database']} calls with incomplete database imports"
+                     " (missing snapshot fingerprint or recorded import errors).")
     lines.append("* at least 10 events and over 2%; filed only when it got worse than the previous window.")
     return lines

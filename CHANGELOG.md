@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.1] - 2026-10-15
+
+### Changed
+
+- Use database import completeness for OpenCode health
+
 ## [1.2.0] - 2026-10-14
 
 ### Added
