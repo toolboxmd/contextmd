@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.2] - 2026-10-15
+
+### Changed
+
+- Redraw the feature map around the four-layer architecture in #84
+
 ## [1.2.1] - 2026-10-15
 
 ### Changed
