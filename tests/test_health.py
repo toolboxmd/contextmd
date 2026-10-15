@@ -60,6 +60,7 @@ SOURCES_SCHEMA = """
 CREATE TABLE sources (id INTEGER PRIMARY KEY AUTOINCREMENT, harness TEXT NOT NULL, path TEXT NOT NULL,
   sha256 TEXT NOT NULL DEFAULT '', size_bytes INTEGER NOT NULL DEFAULT 0, read_offset INTEGER NOT NULL DEFAULT 0,
   session_id TEXT, imported_at REAL NOT NULL);
+CREATE TABLE import_errors (harness TEXT, source_path TEXT NOT NULL, error TEXT NOT NULL, created_at REAL NOT NULL);
 """
 
 
@@ -429,6 +430,29 @@ class CueHealthTest(HealthFixture, unittest.TestCase):
         self.event("codex", "x1", "exec-2", at + 50, family="tool_result")
         self.event("codex", "x1", "call_abc", at + 1)
         self.source("x1", NOW, harness="codex")
+
+    def test_opencode_snapshot_completeness_is_not_a_jsonl_byte_tail(self):
+        at = NOW - 5 * H
+        cases = ("complete", "stale", "unimported", "unreadable", "malformed", "sibling")
+        for session in cases:
+            self.moment(harness="opencode", kind="pre_tool", at=at, session=session, call="a")
+            self.moment(harness="opencode", kind="tool_result", at=at + 100, session=session, call="b")
+            self.event("opencode", session, "a", at)
+            self.event("opencode", session, "gap", at + 50)
+            self.source(session, at - 1 if session == "stale" else NOW,
+                        harness="opencode", read_offset=0, size=4096)
+        self.ledger.execute("UPDATE sources SET path='/x/opencode.db#' || session_id")
+        self.ledger.execute("UPDATE sources SET sha256='session-snapshot' WHERE session_id != 'unimported'")
+        for session, error in (("unreadable", "source_unreadable"), ("malformed", "malformed_json")):
+            self.ledger.execute("INSERT INTO import_errors VALUES ('opencode', ?, ?, ?)",
+                                (f"/x/opencode.db#{session}", error, NOW - 1))
+        # Every backing source must be complete, even if one sibling imported successfully.
+        self.source("sibling", NOW + 1, harness="opencode", read_offset=0, size=4096)
+        self.ledger.commit()
+        text = self.day()
+        self.assertIn("Observer opencode: judged 2 tool calls, server cut 0, no pre-tool row 1 (50.0%)", text)
+        self.assertIn("10 in 5 sessions not synced", text)
+        self.assertIn("8 calls with incomplete database imports", text)
 
     def test_tool_calls_without_a_pre_tool_row_and_what_is_not_judged(self):
         self.observed_day()
