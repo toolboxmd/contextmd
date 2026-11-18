@@ -512,14 +512,16 @@ class TargetTest(unittest.TestCase):
             p = entry(d, "vc", "Read the procedure.", command="git push", must_know_before="true",
                       target="procedures/vc.md")
             e = store.parse(p)
-            self.assertEqual(e.target, os.path.realpath(Path(d) / "procedures" / "vc.md"))
+            # The target does not exist, so it stays lexical beside the entry as given.
+            self.assertEqual(e.target, str(Path(d) / "procedures" / "vc.md"))
 
     def test_context_entry_can_point_to_a_record(self):
         with tempfile.TemporaryDirectory() as d:
             entry(d, "vc", "Read it.", command="git push", target="x.md")
             st = store.load([d])
             self.assertEqual(st.errors, [])
-            self.assertEqual(st.entries[0].target, str(Path(d) / "x.md"))
+            # load() resolves each source root, so the missing target is lexical under the resolved root.
+            self.assertEqual(st.entries[0].target, str(Path(os.path.realpath(d)) / "x.md"))
             self.assertFalse(st.entries[0].must_know_before)
 
 

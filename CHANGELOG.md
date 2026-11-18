@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.3] - 2026-11-18
+
+### Changed
+
+- Make four path tests agree with the resolved-root contract on macOS
+
 ## [1.2.2] - 2026-10-15
 
 ### Changed
