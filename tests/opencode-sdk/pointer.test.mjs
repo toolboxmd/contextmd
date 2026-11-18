@@ -66,11 +66,11 @@ async function fixture(t, options = {}) {
       return json(part);
     },
   });
-  const factory = (await import(pathToFileURL(pluginFile).href)).default;
+  const factory = (await import(pathToFileURL(pluginFile).href)).default.server;
   const plugin = await factory({ directory: "/workspace/space and 知識", client: options.noTransport ? {} : client });
   const transform = (output) => plugin["experimental.chat.messages.transform"]({}, output);
   const start = () => plugin["chat.message"]({ sessionID: "ses_native" });
-  const recreate = async () => (await import(`${pathToFileURL(pluginFile).href}?recreated`)).default({
+  const recreate = async () => (await import(`${pathToFileURL(pluginFile).href}?recreated`)).default.server({
     directory: "/workspace/space and 知識", client,
   });
   return { plugin, transform, start, calls, patches, stored, state, client, recreate };

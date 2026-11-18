@@ -160,6 +160,13 @@ that machine until a probe every 30 seconds sees it answer; a slow reply is a
 Served text says it comes from the user's own ContextMD store. On OpenCode it is
 added to the user's message rather than the tool output.
 
+One OpenCode plugin file serves OpenCode 1.x (from 1.3.10) and 2.x. On 2.x a
+deny stops a call at OpenCode's permission check, so a tool that skips that
+check still runs, and its rule shows at the next model call. On 2.x the Great
+Library pointer is a stored message just before the user's message, and after a
+compaction it returns with the next user message rather than in the
+continuation.
+
 A deny counts as shown only with evidence. On Claude Code and Grok, Chromeria
 records the text the model saw for a denied call; when another hook's deny
 replaced this one, the rule stays armed and that deny does not count toward

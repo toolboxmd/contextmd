@@ -97,7 +97,7 @@ flowchart TB
         RD["Readers called by path; OpenCode reservations"]
         %% RD: toolboxmd/chromeria#221
         FL["Serving on Codex, Grok and OpenCode"]
-        %% FL: #12
+        %% FL: #12 #88
         GD["Grok deny defects"]
         %% GD: toolboxmd/chromeria#229 toolboxmd/chromeria#230 toolboxmd/chromeria#228
         PT["Pointer-trial retirement"]

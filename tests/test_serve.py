@@ -887,7 +887,7 @@ globalThis.fetch = (url) => {
   return track(url);
 };
 const { default: plugin } = await import(pluginPath);
-const hooks = await plugin({ directory: "/tmp" });
+const hooks = await plugin.server({ directory: "/tmp" });
 const msgs = (text) => ({ messages: [{ info: { role: "user", id: "m1", sessionID: "s" }, parts: [] }] });
 const out = {};
 
@@ -1031,7 +1031,7 @@ globalThis.fetch = (url, init) => {
   return Promise.resolve({ status: 204, json: async () => ({}) });
 };
 const { default: plugin } = await import(pluginPath);
-const hooks = await plugin({ directory: "/tmp" });
+const hooks = await plugin.server({ directory: "/tmp" });
 const after = (output, metadata) =>
   hooks["tool.execute.after"]({ tool: "read", sessionID: "s", callID: "c", args: { filePath: "/r.md" } },
                               { output, metadata });
@@ -1070,7 +1070,7 @@ globalThis.fetch = (url, init) => new Promise((resolve, reject) => {
   init.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); });
 });
 const { default: plugin } = await import(pluginPath);
-const hooks = await plugin({ directory: "/tmp" });
+const hooks = await plugin.server({ directory: "/tmp" });
 await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s", callID: "c", args: {} }, { output: "", metadata: { exit: 0 } });
 const m = { messages: [{ info: { role: "user", id: "m1", sessionID: "s" }, parts: [] }] };
 await hooks["experimental.chat.messages.transform"]({}, m);
