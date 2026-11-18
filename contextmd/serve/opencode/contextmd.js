@@ -5,6 +5,11 @@
  * authenticates like the command hooks: the server URL from Chromeria's
  * server-runtime.json and the Chromeria session stored in hook-credential.
  *
+ * One file serves both plugin APIs: OpenCode 1.x calls `server` (its plugin-module
+ * entry, from 1.3.10), OpenCode 2.x calls `setup` (`@opencode/plugin`). Both send
+ * the serving module the 1.x moments, so its `opencode` harness profile serves both.
+ * The 2.x differences are described above `setup`.
+ *
  * Served text reaches the model as part of the user's message, not as tool
  * output: OpenCode models doubted rules that arrived as tool output
  * (obedience test, 2026-10-12), and the canary (#5) proved a text part added in
@@ -99,12 +104,9 @@ const pending = new Map();
 function ownedParts(messages) {
   return messages.flatMap((message) => message.info.role === "user"
     ? message.parts.filter((part) => {
-      const mark = part.metadata && part.metadata.contextmd;
       return part.type === "text" && part.synthetic === true && part.ignored !== true
         && typeof part.text === "string" && part.text.length > 0
-        && mark && mark.pointer === "great_library"
-        && typeof mark.delivery === "string" && /^[0-9a-f]{24}$/.test(mark.delivery)
-        && typeof mark.version === "string" && /^[0-9a-f]{12}$/.test(mark.version);
+        && validMark(part.metadata && part.metadata.contextmd);
     }) : []);
 }
 
@@ -151,13 +153,21 @@ async function retireHeld(id, held) {
   // A save may still commit. Its old-epoch charge remains owned by that delivery.
 }
 
-function markedPart(held, message) {
+function pointerMark(held) {
   const headEnd = held.text.indexOf("\n\n");
   const line = headEnd < 0 ? held.text : held.text.slice(headEnd + 2);
   const version = createHash("sha256").update(line, "utf8").digest("hex").slice(0, 12);
+  return { contextmd: { pointer: "great_library", delivery: held.delivery, version } };
+}
+
+const validMark = (mark) => !!mark && mark.pointer === "great_library"
+  && typeof mark.delivery === "string" && /^[0-9a-f]{24}$/.test(mark.delivery)
+  && typeof mark.version === "string" && /^[0-9a-f]{12}$/.test(mark.version);
+
+function markedPart(held, message) {
   return { id: `prt_contextmdgl${held.delivery}`, sessionID: message.info.sessionID,
     messageID: message.info.id, type: "text", synthetic: true, text: held.text,
-    metadata: { contextmd: { pointer: "great_library", delivery: held.delivery, version } } };
+    metadata: pointerMark(held) };
 }
 
 function pushIntoOwnMessage(messages, part) {
@@ -175,6 +185,23 @@ function queue(sessionID, turn, text, settle, release) {
   served.set(sessionID, list);
 }
 
+/** Show every queued text through `push`, settling each the first time it is shown. */
+async function applyItems(sessionID, push) {
+  const list = served.get(sessionID);
+  if (!list || list.length === 0) return;
+  if (endpoint() === null) {
+    await drop(sessionID);
+    return;
+  }
+  for (const item of list) {
+    if (item.state === "refused") continue;
+    item.shown = true;
+    push(item.text);
+    if (item.state === "pending") item.state = await item.settle();
+    if (item.state === "retry") item.state = "pending";
+  }
+}
+
 /** Forget queued text for a session, and free any reply the model has not been shown. */
 async function drop(sessionID) {
   const list = served.get(sessionID) || [];
@@ -190,7 +217,8 @@ async function drop(sessionID) {
   }
 }
 
-export default async function contextmd(ctx) {
+/** OpenCode 1.x: the hooks object its plugin-module `server` entry returns. */
+async function server(ctx) {
   const directory = (ctx && (ctx.directory || ctx.worktree)) || process.cwd();
   const client = ctx && ctx.client;
 
@@ -243,30 +271,6 @@ export default async function contextmd(ctx) {
     // Keep the charge and retry the identical part until the request shows it.
   }
 
-  async function applyGenericItems(output) {
-    const last = [...output.messages].reverse().find((m) => m.info.role === "user");
-    const list = last && served.get(last.info.sessionID);
-    if (!list || list.length === 0) return;
-    if (endpoint() === null) {
-      await drop(last.info.sessionID);
-      return;
-    }
-    for (const item of list) {
-      if (item.state === "refused") continue;
-      item.shown = true;
-      last.parts.push({
-        id: `prt_contextmd${randomBytes(6).toString("hex")}`,
-        sessionID: last.info.sessionID,
-        messageID: last.info.id,
-        type: "text",
-        text: item.text,
-        synthetic: true,
-      });
-      if (item.state === "pending") item.state = await item.settle();
-      if (item.state === "retry") item.state = "pending";
-    }
-  }
-
   return {
     "chat.message": async (input) => {
       await pending.get(input.sessionID);
@@ -284,8 +288,15 @@ export default async function contextmd(ctx) {
       if (got && got.pointer) pointer.set(input.sessionID, got.pointer);
     },
     "experimental.chat.messages.transform": async (_input, output) => {
-      await applyGenericItems(output);
       const last = [...output.messages].reverse().find((m) => m.info.role === "user");
+      if (last) await applyItems(last.info.sessionID, (text) => last.parts.push({
+        id: `prt_contextmd${randomBytes(6).toString("hex")}`,
+        sessionID: last.info.sessionID,
+        messageID: last.info.id,
+        type: "text",
+        text,
+        synthetic: true,
+      }));
       if (last) await ensurePointer(last.info.sessionID, output);
     },
     "tool.execute.before": async (input, output) => {
@@ -338,3 +349,200 @@ export default async function contextmd(ctx) {
     },
   };
 }
+
+// OpenCode 2.x renames tools the serving module keys on; send it the 1.x name and arguments.
+function v1Call(tool, input) {
+  const args = input && typeof input === "object" && !Array.isArray(input) ? { ...input } : {};
+  if (tool === "read" && typeof args.path === "string" && args.filePath === undefined) {
+    args.filePath = args.path;
+    delete args.path;
+  }
+  return { tool: tool === "shell" ? "bash" : tool, args };
+}
+
+const textOf = (message) => typeof message.content === "string" ? message.content
+  : Array.isArray(message.content)
+    ? message.content.filter((p) => p && p.type === "text" && typeof p.text === "string").map((p) => p.text).join("")
+    : "";
+
+function pushText(message, text) {
+  if (typeof message.content === "string") message.content = [{ type: "text", text: message.content }];
+  message.content.push({ type: "text", text });
+}
+
+/** Saved pointer messages in a 2.x request: user messages whose stored metadata carries the mark. */
+const ownedMessages = (messages) => messages.filter((m) => m.role === "user"
+  && validMark(m.metadata && m.metadata.contextmd) && textOf(m).length > 0);
+
+/**
+ * OpenCode 2.x. Hooks and their 1.x equivalents (measured on 2.3.2):
+ * - `session.hook("prompt")` is `chat.message`; `session.hook("context")` is the
+ *   messages transform and runs before every model call.
+ * - `tool.hook("execute.before")` sends the pre-tool moment, but a throw there does
+ *   not stop the call. A deny stops it from `permission.hook("evaluate")`, which
+ *   runs after it for the same call id; its message reaches the model as the tool
+ *   error. A tool that skips the permission check runs; its rule still shows at the
+ *   next model call.
+ * - The pointer is a stored synthetic message (`session.synthetic`) instead of a
+ *   patched part, saved from the prompt hook: it then lands before the user's
+ *   message. Saved during a model call it would wake the session for another call
+ *   after the final answer, so a pointer the prompt hook could not start saving
+ *   waits for the next user message, as one after a compaction does. Only a save
+ *   that may have committed is retried, with the same id, at each model call.
+ * - Compaction arrives as the `session.compaction.ended` event.
+ */
+async function setup(ctx) {
+  const directory = (ctx.location && ctx.location.directory) || process.cwd();
+  const session = ctx.session;
+  // Calls whose pre-tool moment returned a deny, waiting for their permission check, with
+  // the turn whose user message carries the rule.
+  const denied = new Map();
+
+  async function save(sessionID, held, delivery) {
+    try {
+      const stored = await session.synthetic({ sessionID, id: held.part.id, text: held.part.text,
+        metadata: held.part.metadata, delivery, resume: false });
+      return stored && stored.id === held.part.id ? "stored" : "unknown";
+    } catch (error) {
+      const status = error && (error.status ?? (error.cause && error.cause.status));
+      return status >= 400 && status < 500 ? "rejected" : "unknown";
+    }
+  }
+
+  async function savePointer(sessionID, delivery) {
+    const held = pointer.get(sessionID);
+    if (!held || held.state !== "waiting") return;
+    if (typeof (session && session.synthetic) !== "function")
+      return releaseHeld(sessionID, held, "transport_unavailable");
+    held.applyingSent = true;
+    const status = await pointerCall(held, "applying");
+    if (status === 409) return void pointer.delete(sessionID);
+    if (status !== 204) return; // Released or retried at the next user message.
+    held.state = "applying";
+    held.part = { id: `msg_contextmdgl${held.delivery}`, text: held.text, metadata: pointerMark(held) };
+    held.attempts += 1;
+    const outcome = await save(sessionID, held, delivery);
+    if (outcome === "rejected") return releaseHeld(sessionID, held, "save_rejected");
+    if (outcome === "stored") return settleHeld(sessionID, held);
+    // An ambiguous save may have committed: keep the charge, show and retry the same id.
+  }
+
+  async function ensurePointer(sessionID, messages) {
+    const seen = new Set();
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (!ownedMessages([messages[i]]).length) continue;
+      if (seen.has(textOf(messages[i]))) messages.splice(i, 1);
+      else seen.add(textOf(messages[i]));
+    }
+    await pending.get(sessionID);
+    const held = pointer.get(sessionID);
+    if (!held) return;
+    if (held.next) return finishHeld(sessionID, held, held.next.action, held.next.reason);
+    if (endpoint() === null)
+      return held.attempts === 0 ? releaseHeld(sessionID, held, "serving_off") : undefined;
+    const owned = ownedMessages(messages);
+    if (owned.some((m) => m.metadata.contextmd.delivery === held.delivery)
+        || owned.some((m) => textOf(m) === held.text)) return settleHeld(sessionID, held);
+    if (held.state !== "applying") return;
+    held.attempts += 1;
+    const outcome = await save(sessionID, held, "steer");
+    const last = [...messages].reverse().find((m) => m.role === "user");
+    if (last) pushText(last, held.text);
+    if (outcome === "stored") return settleHeld(sessionID, held);
+  }
+
+  await session.hook("prompt", async (input) => {
+    const id = input.sessionID;
+    await pending.get(id);
+    const turn = (turns.get(id) || 0) + 1;
+    turns.set(id, turn);
+    await drop(id);
+    const old = pointer.get(id);
+    if (old && old.next) await finishHeld(id, old, old.next.action, old.next.reason);
+    else if (old && old.attempts === 0) await releaseHeld(id, old, "turn_ended");
+    const got = await moment({ hook: "chat.message", directory, input: { sessionID: id } }, { pointer: true });
+    const text = got && got.reply && got.reply.context;
+    if (text) queue(id, turn, text, got.settle, got.release);
+    if (got && got.pointer) {
+      pointer.set(id, got.pointer);
+      await savePointer(id, input.delivery === "queue" ? "queue" : "steer");
+    }
+  });
+
+  await session.hook("context", async (input) => {
+    const last = [...input.messages].reverse().find((m) => m.role === "user");
+    if (last) await applyItems(input.sessionID, (text) => pushText(last, text));
+    await ensurePointer(input.sessionID, input.messages);
+  });
+
+  await ctx.tool.hook("execute.before", async (input) => {
+    const turn = turns.get(input.sessionID) || 0;
+    const call = v1Call(input.tool, input.input);
+    const got = await moment({
+      hook: "tool.execute.before",
+      directory,
+      input: { tool: call.tool, sessionID: input.sessionID, callID: input.id },
+      output: { args: call.args },
+    });
+    const text = got && got.reply && got.reply.deny;
+    // A deny whose rule could not reach the model must not stop the call.
+    if (!text || (turns.get(input.sessionID) || 0) !== turn) {
+      if (got && got.reply) await got.release();
+      return;
+    }
+    queue(input.sessionID, turn, text, got.settle, got.release);
+    denied.set(input.id, { sessionID: input.sessionID, turn });
+  });
+
+  await ctx.permission.hook("evaluate", (input) => {
+    const call = input.source && input.source.type === "tool" ? input.source.id : undefined;
+    const deny = call && denied.get(call);
+    if (!deny) return;
+    denied.delete(call);
+    // A new user message since dropped the rule; a stop without it must not happen.
+    if ((turns.get(deny.sessionID) || 0) !== deny.turn) return;
+    input.effect = "deny";
+    input.message = STOPPED;
+  });
+
+  await ctx.tool.hook("execute.after", async (input) => {
+    denied.delete(input.id);
+    if (input.status !== "completed") return;
+    const turn = turns.get(input.sessionID) || 0;
+    const call = v1Call(input.tool, input.input);
+    const result = input.result || {};
+    const out = Array.isArray(result.content)
+      ? result.content.filter((p) => p && p.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n")
+      : "";
+    const meta = result.metadata || {};
+    const exit = meta.exit ?? (result.output && result.output.exitCode);
+    // A cut read must stay partial (chromeria#225), as in the 1.x hook.
+    const truncated = meta.truncated === true || /\(line truncated to \d+ chars\)/.test(out);
+    const got = await moment({
+      hook: "tool.execute.after",
+      directory,
+      input: { tool: call.tool, sessionID: input.sessionID, callID: input.id, args: call.args },
+      output: { metadata: { exit, truncated }, output: out.slice(-MAX_OUTPUT) },
+    });
+    const text = got && got.reply && got.reply.context;
+    if (text) queue(input.sessionID, turn, text, got.settle, got.release);
+    else if (got && got.reply) await got.release();
+  });
+
+  const events = ctx.event.subscribe({ types: ["session.compaction.ended"] })[Symbol.asyncIterator]();
+  void (async () => {
+    for (let next = await events.next(); !next.done; next = await events.next()) {
+      const id = next.value && next.value.data && next.value.data.sessionID;
+      if (!id) continue;
+      // The next user message waits for this; it asks for the new epoch's pointer itself.
+      pending.set(id, (async () => {
+        await moment({ hook: "session.compacted", directory, input: { sessionID: id } });
+        const old = pointer.get(id);
+        if (old) await retireHeld(id, old);
+      })());
+    }
+  })().catch(() => undefined);
+  return async () => { await (events.return && events.return()); };
+}
+
+export default { id: "contextmd", server, setup };

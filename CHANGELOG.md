@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.0] - 2026-11-18
+
+### Added
+
+- Serve OpenCode 2.x from the same OpenCode plugin file, keeping 1.x
+
 ## [1.2.3] - 2026-11-18
 
 ### Changed
