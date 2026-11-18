@@ -71,7 +71,7 @@ class LibraryCorpusTest(unittest.TestCase):
     @unittest.skipIf(os.geteuid() == 0, 'root bypasses directory permissions')
     def test_unreadable_directory_is_reported(self):
         with tempfile.TemporaryDirectory() as d:
-            root = Path(d) / 'library'
+            root = Path(os.path.realpath(d)) / 'library'
             root.mkdir()
             root.chmod(0)
             try:
@@ -118,7 +118,9 @@ class LibraryAdmissionTest(unittest.TestCase):
             self.assertIn('repeated field', json.loads(result.stdout)['errors'][0])
 
     def test_project_discovery_uses_checkout_boundaries_and_worktree_files(self):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as raw:
+            # library_dir returns resolved paths; /tmp is a symlink on macOS.
+            d = os.path.realpath(raw)
             root = Path(d) / 'repo'
             (root / '.git').mkdir(parents=True)
             (root / 'library').mkdir()
